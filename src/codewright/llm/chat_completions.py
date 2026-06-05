@@ -186,10 +186,9 @@ class ChatCompletionsAdapter(LLMProvider):
                         elif event.kind == "tool_call_arguments_delta":
                             yield event
 
-                    finish_reason = (
-                        chunk.get("choices", [{}])[0].get("finish_reason")
-                        or finish_reason
-                    )
+                    choices = chunk.get("choices") or []
+                    if choices:
+                        finish_reason = choices[0].get("finish_reason") or finish_reason
 
                     usage = chunk.get("usage")
                     if usage:
