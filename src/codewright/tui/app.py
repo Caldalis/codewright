@@ -660,6 +660,7 @@ class TuiApp:
         elif isinstance(msg, EvTurnAborted):
             self._status.turn_state = "idle"
             self._delta_buf = ""
+            self._clear_pending_approvals()
             self._append_history(self._block("system", f"turn aborted: {msg.reason}"))
         elif isinstance(msg, EvWarning):
             self._append_history(self._block("warning", msg.message))
@@ -667,6 +668,7 @@ class TuiApp:
             self._append_history(self._block("error", msg.message))
         elif isinstance(msg, EvShutdownComplete):
             self._shutting_down = True
+            self._clear_pending_approvals()
             self._exit_application()
         self._invalidate()
 
@@ -693,6 +695,11 @@ class TuiApp:
         else:
             self._approval_queue.append(pending)
         self._append_history(self._block("approval", action.summary))
+
+    def _clear_pending_approvals(self) -> None:
+        self._pending_approval = None
+        self._approval_queue.clear()
+        self._status.pending_approvals = 0
 
     def _block(self, label: str, body: str, *, body_style: str = "") -> Text:
         body = body.strip() or "<empty>"

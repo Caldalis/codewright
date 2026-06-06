@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from codewright.agent.turn_context import TurnContext
@@ -22,6 +24,10 @@ from codewright.tools.errors import FatalToolError, RespondToModelError
 
 if TYPE_CHECKING:
     from codewright.agent.session import Session
+
+
+class _TurnInterrupted(Exception):
+    pass
 
 
 async def run_turn(
@@ -50,10 +56,7 @@ async def run_turn(
 
     while True:
         if turn_context.cancellation_token.is_cancelled():
-            await session.emit_event(
-                EvTurnAborted(turn_id=turn_context.turn_id, reason="interrupted"),
-                sub_id,
-            )
+            await _emit_turn_interrupted(session, turn_context, sub_id)
             return None
 
         if not compacted_this_turn and session.context.should_compact():
@@ -104,26 +107,38 @@ async def run_turn(
         message_text = ""
         tool_calls: list[ToolCallBlock] = []
         stream_error: str | None = None
-        stream_iter = await _maybe_await(stream)
+        try:
+            stream_iter = await _maybe_await(
+                stream, turn_context.cancellation_token
+            )
+        except _TurnInterrupted:
+            await _emit_turn_interrupted(session, turn_context, sub_id)
+            return None
 
-        async for ev in stream_iter:
-            if ev.kind == "text_delta" and ev.text:
-                message_text += ev.text
-                await session.emit_event(EvAgentMessageDelta(delta=ev.text), sub_id)
-            elif ev.kind == "tool_call_completed" and ev.tool_call is not None:
-                tool_calls.append(ev.tool_call)
-            elif ev.kind == "usage" and ev.usage is not None:
-                await session.emit_event(
-                    EvTokenCount(
-                        input=ev.usage.input,
-                        output=ev.usage.output,
-                        total=ev.usage.total,
-                    ),
-                    sub_id,
-                )
-            elif ev.kind == "error":
-                stream_error = ev.error or "unknown provider error"
-                break
+        try:
+            async for ev in _iter_stream_with_cancellation(
+                stream_iter, turn_context.cancellation_token
+            ):
+                if ev.kind == "text_delta" and ev.text:
+                    message_text += ev.text
+                    await session.emit_event(EvAgentMessageDelta(delta=ev.text), sub_id)
+                elif ev.kind == "tool_call_completed" and ev.tool_call is not None:
+                    tool_calls.append(ev.tool_call)
+                elif ev.kind == "usage" and ev.usage is not None:
+                    await session.emit_event(
+                        EvTokenCount(
+                            input=ev.usage.input,
+                            output=ev.usage.output,
+                            total=ev.usage.total,
+                        ),
+                        sub_id,
+                    )
+                elif ev.kind == "error":
+                    stream_error = ev.error or "unknown provider error"
+                    break
+        except _TurnInterrupted:
+            await _emit_turn_interrupted(session, turn_context, sub_id)
+            return None
 
         if stream_error is not None:
             await session.emit_event(EvError(message=stream_error), sub_id)
@@ -205,7 +220,17 @@ async def run_turn(
 
         if invocations:
             try:
-                results = await session.tool_executor.dispatch_batch(invocations)
+                results = await _dispatch_tools_with_cancellation(
+                    session, invocations, turn_context.cancellation_token
+                )
+            except _TurnInterrupted:
+                await _emit_turn_interrupted(session, turn_context, sub_id)
+                return None
+            except asyncio.CancelledError:
+                if turn_context.cancellation_token.is_cancelled():
+                    await _emit_turn_interrupted(session, turn_context, sub_id)
+                    return None
+                raise
             except FatalToolError as exc:
                 await session.emit_event(EvError(message=str(exc)), sub_id)
                 await session.emit_event(
@@ -269,7 +294,104 @@ def _append_tool_failure(session: Session, call: ToolCallBlock, body: str) -> No
     )
 
 
-async def _maybe_await(value):
+async def _maybe_await(value, cancellation_token):
     if hasattr(value, "__aiter__"):
         return value
-    return await value
+
+    pending_stream = asyncio.ensure_future(value)
+    wait_cancel = asyncio.create_task(cancellation_token.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            [pending_stream, wait_cancel],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if wait_cancel in done:
+            pending_stream.cancel()
+            with suppress(asyncio.CancelledError):
+                await pending_stream
+            raise _TurnInterrupted()
+        return pending_stream.result()
+    except asyncio.CancelledError:
+        pending_stream.cancel()
+        if cancellation_token.is_cancelled():
+            raise _TurnInterrupted() from None
+        raise
+    finally:
+        if not wait_cancel.done():
+            wait_cancel.cancel()
+
+
+async def _emit_turn_interrupted(
+    session: Session, turn_context: TurnContext, sub_id: str
+) -> None:
+    await session.emit_event(
+        EvTurnAborted(turn_id=turn_context.turn_id, reason="interrupted"),
+        sub_id,
+    )
+
+
+async def _iter_stream_with_cancellation(stream_iter, cancellation_token):
+    iterator = stream_iter.__aiter__()
+    while True:
+        if cancellation_token.is_cancelled():
+            raise _TurnInterrupted()
+
+        next_event = asyncio.create_task(iterator.__anext__())
+        wait_cancel = asyncio.create_task(cancellation_token.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                [next_event, wait_cancel],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if wait_cancel in done:
+                next_event.cancel()
+                with suppress(asyncio.CancelledError):
+                    await next_event
+                await _close_stream_iterator(iterator)
+                raise _TurnInterrupted()
+            try:
+                yield next_event.result()
+            except StopAsyncIteration:
+                return
+        except asyncio.CancelledError:
+            next_event.cancel()
+            if cancellation_token.is_cancelled():
+                raise _TurnInterrupted() from None
+            raise
+        finally:
+            if not wait_cancel.done():
+                wait_cancel.cancel()
+
+
+async def _close_stream_iterator(iterator) -> None:
+    aclose = getattr(iterator, "aclose", None)
+    if aclose is None:
+        return
+    with suppress(Exception, asyncio.CancelledError):
+        await aclose()
+
+
+async def _dispatch_tools_with_cancellation(
+    session: Session, invocations, cancellation_token
+):
+    dispatch = asyncio.create_task(session.tool_executor.dispatch_batch(invocations))
+    wait_cancel = asyncio.create_task(cancellation_token.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            [dispatch, wait_cancel],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if wait_cancel in done:
+            dispatch.cancel()
+            with suppress(asyncio.CancelledError):
+                await dispatch
+            raise _TurnInterrupted()
+        return dispatch.result()
+    except asyncio.CancelledError:
+        dispatch.cancel()
+        if cancellation_token.is_cancelled():
+            raise _TurnInterrupted() from None
+        raise
+    finally:
+        if not wait_cancel.done():
+            wait_cancel.cancel()

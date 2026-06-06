@@ -7,6 +7,7 @@ from codewright.protocol import (
     AskForApproval,
     EvError,
     EvShutdownComplete,
+    EvTurnAborted,
     EvTurnCompleted,
     EvTurnStarted,
     EvWarning,
@@ -51,15 +52,24 @@ async def _dispatch(session: Session, sub: Submission) -> bool:
         if session.llm_enabled:
             await _drive_user_turn(session, sub, op)
         else:
-
-            await session.emit_event(EvTurnStarted(turn_id=sub.id), sub.id)
-            await session.emit_event(
-                EvTurnCompleted(
-                    turn_id=sub.id,
-                    last_agent_message="[mock] no real LLM wired yet",
-                ),
-                sub.id,
-            )
+            cancellation = session._activate_turn_cancellation(sub.id)
+            try:
+                await session.emit_event(EvTurnStarted(turn_id=sub.id), sub.id)
+                if cancellation.is_cancelled():
+                    await session.emit_event(
+                        EvTurnAborted(turn_id=sub.id, reason="interrupted"),
+                        sub.id,
+                    )
+                else:
+                    await session.emit_event(
+                        EvTurnCompleted(
+                            turn_id=sub.id,
+                            last_agent_message="[mock] no real LLM wired yet",
+                        ),
+                        sub.id,
+                    )
+            finally:
+                session._clear_turn_cancellation(cancellation)
         return False
 
     if isinstance(op, OpCompact):
@@ -102,7 +112,7 @@ async def _drive_user_turn(session: Session, sub: Submission, op: OpUserTurn) ->
     from codewright.agent.turn_context import TurnContext
 
     user_input = "\n".join(item.text for item in op.items)
-    cancellation = session.cancellation_token.child()
+    cancellation = session._activate_turn_cancellation(sub.id)
 
     context_manager = session.context
     turn_context = TurnContext(
@@ -117,4 +127,7 @@ async def _drive_user_turn(session: Session, sub: Submission, op: OpUserTurn) ->
         role=session.role,
     )
 
-    await run_turn(session, turn_context, user_input, sub_id=sub.id)
+    try:
+        await run_turn(session, turn_context, user_input, sub_id=sub.id)
+    finally:
+        session._clear_turn_cancellation(cancellation)
