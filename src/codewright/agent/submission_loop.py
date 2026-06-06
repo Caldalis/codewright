@@ -11,11 +11,8 @@ from codewright.protocol import (
     EvTurnStarted,
     EvWarning,
     OpCompact,
-    OpExecApprovalResponse,
     OpInterAgentCommunication,
-    OpInterrupt,
     OpOverrideTurnContext,
-    OpPatchApprovalResponse,
     OpShutdown,
     OpUserTurn,
     Submission,
@@ -41,11 +38,10 @@ async def submission_loop(session: Session) -> None:
 
 
 async def _dispatch(session: Session, sub: Submission) -> bool:
-    op = sub.op
-
-    if isinstance(op, OpInterrupt):
-        session.cancellation_token.cancel()
+    if await session._handle_out_of_band_op(sub):
         return False
+
+    op = sub.op
 
     if isinstance(op, OpShutdown):
         await session.emit_event(EvShutdownComplete(), sub.id)
@@ -70,28 +66,6 @@ async def _dispatch(session: Session, sub: Submission) -> bool:
         await session.emit_event(
             EvWarning(message="compact not yet implemented "), sub.id
         )
-        return False
-
-    if isinstance(op, OpExecApprovalResponse):
-        resolved = session._resolve_pending_approval(op.request_id, op.decision)
-        if not resolved:
-            await session.emit_event(
-                EvWarning(
-                    message=f"exec approval response for unknown request_id={op.request_id!r}"
-                ),
-                sub.id,
-            )
-        return False
-
-    if isinstance(op, OpPatchApprovalResponse):
-        resolved = session._resolve_pending_approval(op.request_id, op.decision)
-        if not resolved:
-            await session.emit_event(
-                EvWarning(
-                    message=f"patch approval response for unknown request_id={op.request_id!r}"
-                ),
-                sub.id,
-            )
         return False
 
     if isinstance(op, OpInterAgentCommunication):

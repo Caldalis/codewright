@@ -18,6 +18,9 @@ from codewright.protocol import (
     EvSessionConfigured,
     EvWarning,
     Op,
+    OpExecApprovalResponse,
+    OpInterrupt,
+    OpPatchApprovalResponse,
     PendingAction,
     PermissionProfile,
     PlanItem,
@@ -121,11 +124,48 @@ class Session:
 
     async def submit(self, op: Op) -> str:
         sub_id = uuid.uuid4().hex
-        await self._tx_sub.put(Submission(id=sub_id, op=op))
+        submission = Submission(id=sub_id, op=op)
+        await self.submit_with_id(submission)
         return sub_id
 
     async def submit_with_id(self, submission: Submission) -> None:
+        if await self._handle_out_of_band_op(submission):
+            return
         await self._tx_sub.put(submission)
+
+    async def _handle_out_of_band_op(self, sub: Submission) -> bool:
+        op = sub.op
+
+        if isinstance(op, OpInterrupt):
+            self.cancellation_token.cancel()
+            return True
+        if isinstance(op, OpExecApprovalResponse):
+            resolved = self._resolve_pending_approval(op.request_id, op.decision)
+            if not resolved:
+                await self.emit_event(
+                    EvWarning(
+                        message=(
+                            "exec approval response for unknown "
+                            f"request_id={op.request_id!r}"
+                        )
+                    ),
+                    sub.id,
+                )
+            return True
+        if isinstance(op, OpPatchApprovalResponse):
+            resolved = self._resolve_pending_approval(op.request_id, op.decision)
+            if not resolved:
+                await self.emit_event(
+                    EvWarning(
+                        message=(
+                            "patch approval response for unknown "
+                            f"request_id={op.request_id!r}"
+                        )
+                    ),
+                    sub.id,
+                )
+            return True
+        return False
 
     async def next_event(self) -> Event:
         return await self._tx_event.get()
