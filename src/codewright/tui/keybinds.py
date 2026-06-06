@@ -24,6 +24,22 @@ def install_keybindings(app: TuiApp) -> KeyBindings:
     def _(event) -> None:
         app.request_shutdown()
 
+    @kb.add("pageup")
+    def _(event) -> None:
+        app.scroll_history_page_up()
+
+    @kb.add("pagedown")
+    def _(event) -> None:
+        app.scroll_history_page_down()
+
+    @kb.add("c-home")
+    def _(event) -> None:
+        app.scroll_history_to_top()
+
+    @kb.add("c-end")
+    def _(event) -> None:
+        app.scroll_history_to_bottom()
+
     @kb.add("y", filter=approval_active)
     def _(event) -> None:
         app.submit_approval(ReviewDecision.APPROVED)

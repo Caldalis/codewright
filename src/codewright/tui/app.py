@@ -4,16 +4,21 @@ import asyncio
 from collections.abc import Awaitable
 from contextlib import suppress
 from dataclasses import dataclass
+from io import StringIO
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.input.base import Input
-from prompt_toolkit.layout import HSplit, Layout, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
+from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output.base import Output
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import Frame, TextArea
+from prompt_toolkit.widgets import TextArea
 from rich.console import Console
 from rich.text import Text
 
@@ -51,8 +56,42 @@ if TYPE_CHECKING:
     from codewright.agent.session import Session
 
 
-_MAX_HISTORY_LINES = 500
+_MAX_HISTORY_ITEMS = 500
 _MAX_APPROVAL_PREVIEW_CHARS = 600
+_MAX_STREAM_PREVIEW_CHARS = 240
+_MOUSE_SCROLL_LINES = 4
+
+_BLOCK_HEADINGS = {
+    "approval": "! Approval",
+    "assistant": "< Codewright",
+    "error": "x Error",
+    "plan": "# Plan",
+    "session": "# Session",
+    "system": "# System",
+    "tool": "# Tool",
+    "warning": "! Warning",
+    "you": "> You",
+}
+
+_BLOCK_HEADING_STYLES = {
+    "approval": "bold yellow",
+    "assistant": "bold green",
+    "error": "bold red",
+    "plan": "bold cyan",
+    "session": "dim",
+    "system": "dim",
+    "tool": "bold magenta",
+    "warning": "bold yellow",
+    "you": "bold cyan",
+}
+
+_BLOCK_BODY_STYLES = {
+    "approval": "yellow",
+    "error": "red",
+    "session": "dim",
+    "system": "dim",
+    "warning": "yellow",
+}
 
 
 @dataclass
@@ -60,6 +99,36 @@ class _PendingApproval:
     request_id: str
     action: PendingAction
     is_exec: bool
+
+
+class _TranscriptControl(UIControl):
+    def __init__(self, owner: TuiApp) -> None:
+        self._owner = owner
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        lines = self._owner._render_history_lines(width)
+        visible_height = max(1, height or len(lines) or 1)
+        self._owner._set_history_layout(
+            line_count=len(lines),
+            visible_height=visible_height,
+        )
+        top = self._owner._history_top_line()
+        visible = lines[top : top + visible_height] or [[]]
+
+        return UIContent(
+            get_line=lambda index: visible[index] if index < len(visible) else [],
+            line_count=len(visible),
+            show_cursor=False,
+        )
+
+    def mouse_handler(self, mouse_event: MouseEvent) -> object | None:
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            self._owner.scroll_history_up(_MOUSE_SCROLL_LINES)
+            return None
+        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            self._owner.scroll_history_down(_MOUSE_SCROLL_LINES)
+            return None
+        return NotImplemented
 
 
 class TuiApp:
@@ -70,7 +139,7 @@ class TuiApp:
         *,
         pt_input: Input | None = None,
         pt_output: Output | None = None,
-        full_screen: bool = False,
+        full_screen: bool = True,
     ) -> None:
         self.session = session
         self._console = console or Console()
@@ -78,6 +147,15 @@ class TuiApp:
         self._pt_output = pt_output
         self._full_screen = full_screen
         self._history: list[Text] = []
+        self._history_rich: Text = Text()
+        self._history_plain: str = ""
+        self._history_version: int = 0
+        self._history_render_cache_key: tuple[int, int] | None = None
+        self._history_rendered_lines: list[list[tuple[str, str]]] = []
+        self._history_content_line_count: int = 1
+        self._history_view_height: int = 1
+        self._history_top_line_target: int = 0
+        self._history_follow_tail: bool = True
         self._delta_buf: str = ""
         self._status = StatusBarState(
             model=session.model,
@@ -88,10 +166,11 @@ class TuiApp:
         self._application: Application | None = None
         self._event_task: asyncio.Task[None] | None = None
         self._bg_tasks: set[asyncio.Task[Any]] = set()
-        self._history_view: TextArea | None = None
+        self._history_view: Window | None = None
         self._input_view: TextArea | None = None
         self._pending_approval: _PendingApproval | None = None
         self._approval_queue: list[_PendingApproval] = []
+        self._rebuild_history_cache()
 
     async def run(self) -> None:
         self._application = self._build_application()
@@ -128,7 +207,9 @@ class TuiApp:
 
         self._pending_approval = None
         self._status.pending_approvals = max(0, self._status.pending_approvals - 1)
-        self._append_history(Text(f"[approval] {decision.value}", style="dim"))
+        self._append_history(
+            self._block("approval", f"decision: {decision.value}", body_style="dim")
+        )
 
         if pending.is_exec:
             self._submit_op(
@@ -150,12 +231,9 @@ class TuiApp:
         self._invalidate()
 
     def _build_application(self) -> Application:
-        self._history_view = TextArea(
-            text=self._history_text(),
-            read_only=True,
-            focusable=False,
-            wrap_lines=True,
-            scrollbar=True,
+        self._history_view = Window(
+            content=_TranscriptControl(self),
+            always_hide_cursor=True,
             style="class:history",
         )
         self._input_view = TextArea(
@@ -168,19 +246,22 @@ class TuiApp:
 
         root = HSplit(
             [
-                Frame(self._history_view, title="Codewright", style="class:frame"),
+                self._history_view,
+                ConditionalContainer(
+                    Window(
+                        height=3,
+                        content=FormattedTextControl(self._approval_fragments),
+                        style="class:approval",
+                        wrap_lines=True,
+                    ),
+                    filter=Condition(lambda: self._pending_approval is not None),
+                ),
+                self._input_view,
                 Window(
                     height=1,
                     content=FormattedTextControl(self._status_fragments),
                     style="class:status",
                 ),
-                Window(
-                    height=3,
-                    content=FormattedTextControl(self._approval_fragments),
-                    style="class:approval",
-                    wrap_lines=True,
-                ),
-                self._input_view,
             ]
         )
         app = Application(
@@ -190,18 +271,18 @@ class TuiApp:
             erase_when_done=False,
             input=self._pt_input,
             output=self._pt_output,
-            mouse_support=False,
+            mouse_support=True,
             style=Style.from_dict(
                 {
-                    "frame": "ansicyan",
+                    "approval": "bg:#3a2f00 #facc15",
+                    "approval.danger": "bold #f87171 bg:#3a2f00",
+                    "approval.key": "bold #86efac bg:#3a2f00",
                     "history": "",
-                    "input": "",
-                    "status": "reverse bold",
-                    "approval": "ansiyellow",
-                    "approval.key": "ansigreen bold",
-                    "approval.danger": "ansired bold",
-                    "warning": "ansiyellow",
-                    "error": "ansired",
+                    "input": "#d7d7d7",
+                    "status": "bg:#202124 #a8a8a8",
+                    "status.brand": "bold #7dd3fc bg:#202124",
+                    "status.key": "bold #d7d7d7 bg:#202124",
+                    "status.warn": "bold #facc15 bg:#202124",
                 }
             ),
         )
@@ -214,48 +295,132 @@ class TuiApp:
             return True
         if self._pending_approval is not None:
             self._append_history(
-                Text(
-                    "[approval pending] press y/s/n/a before sending a new prompt",
-                    style="yellow",
+                self._block(
+                    "system",
+                    "Approval is waiting. Press y, s, n, or a before sending a new prompt.",
                 )
             )
             return True
 
-        self._append_history(Text(f"> {stripped}", style="bold"))
+        self.scroll_history_to_bottom()
+        self._append_history(self._block("you", stripped))
         self._submit_op(OpUserTurn(items=[UserInputText(text=stripped)]))
         self._invalidate()
         return True
 
     def _append_history(self, text: Text) -> None:
         self._history.append(text)
-        if len(self._history) > _MAX_HISTORY_LINES:
-            del self._history[: len(self._history) - _MAX_HISTORY_LINES]
-        self._refresh_history_view()
+        if len(self._history) > _MAX_HISTORY_ITEMS:
+            del self._history[: len(self._history) - _MAX_HISTORY_ITEMS]
+        self._rebuild_history_cache()
         self._invalidate()
 
     def _history_text(self) -> str:
-        if not self._history:
-            return "(no history yet)"
-        return "\n".join(t.plain for t in self._history)
+        return self._history_plain
 
     def _refresh_history_view(self) -> None:
-        if self._history_view is None:
+        self._rebuild_history_cache()
+
+    def scroll_history_up(self, amount: int) -> None:
+        current = self._history_top_line()
+        self._history_follow_tail = False
+        self._history_top_line_target = max(0, current - max(1, amount))
+        self._invalidate()
+
+    def scroll_history_down(self, amount: int) -> None:
+        current = self._history_top_line()
+        max_top = self._history_max_top_line()
+        next_top = min(max_top, current + max(1, amount))
+        if next_top >= max_top:
+            self.scroll_history_to_bottom()
             return
-        self._history_view.text = self._history_text()
-        self._history_view.buffer.cursor_position = len(self._history_view.text)
+        self._history_follow_tail = False
+        self._history_top_line_target = next_top
+        self._invalidate()
+
+    def scroll_history_page_up(self) -> None:
+        self.scroll_history_up(max(1, self._history_view_height - 2))
+
+    def scroll_history_page_down(self) -> None:
+        self.scroll_history_down(max(1, self._history_view_height - 2))
+
+    def scroll_history_to_top(self) -> None:
+        self._history_follow_tail = False
+        self._history_top_line_target = 0
+        self._invalidate()
+
+    def scroll_history_to_bottom(self) -> None:
+        self._history_follow_tail = True
+        self._history_top_line_target = self._history_max_top_line()
+        self._invalidate()
 
     def _status_fragments(self) -> list[tuple[str, str]]:
-        text = self._status.render().plain
+        cwd = self._compact_path(self._status.cwd, max_chars=36)
+        fragments: list[tuple[str, str]] = [
+            ("class:status.brand", " Codewright "),
+            ("class:status", f" model={self._status.model}"),
+            ("class:status", f" cwd={cwd}"),
+            ("class:status", " | "),
+            ("class:status.key", "state "),
+            ("class:status", self._status.turn_state),
+            ("class:status", " | "),
+            ("class:status.key", "tokens "),
+            ("class:status", f"{self._status.input_tokens}/{self._status.output_tokens}"),
+        ]
+        if self._status.pending_approvals:
+            fragments.extend(
+                [
+                    ("class:status", " | "),
+                    ("class:status.warn", "approval "),
+                    ("class:status", str(self._status.pending_approvals)),
+                ]
+            )
+        if self._status.subagent_count:
+            fragments.extend(
+                [
+                    ("class:status", " | "),
+                    ("class:status.key", "agents "),
+                    ("class:status", str(self._status.subagent_count)),
+                ]
+            )
+        scroll_text = self._history_scroll_status()
+        if scroll_text:
+            fragments.extend(
+                [
+                    ("class:status", " | "),
+                    ("class:status.warn", scroll_text),
+                ]
+            )
         if self._delta_buf:
-            text += " | streaming"
-        return [("class:status", text)]
+            preview = self._single_line(
+                self._delta_buf, max_chars=_MAX_STREAM_PREVIEW_CHARS
+            )
+            fragments.extend(
+                [
+                    ("class:status", " | "),
+                    ("class:status.key", "stream "),
+                    ("class:status", preview),
+                ]
+            )
+        fragments.extend(
+            [
+                ("class:status", " | "),
+                ("class:status.key", "PgUp/PgDn "),
+                ("class:status", "scroll "),
+                ("class:status.key", "Ctrl-End "),
+                ("class:status", "bottom "),
+                ("class:status.key", "Ctrl-C "),
+                ("class:status", "interrupt "),
+                ("class:status.key", "Ctrl-D "),
+                ("class:status", "exit"),
+            ]
+        )
+        return fragments
 
     def _approval_fragments(self) -> list[tuple[str, str]]:
         pending = self._pending_approval
         if pending is None:
-            return [
-                ("class:approval", "Ctrl-C interrupt | Ctrl-D exit"),
-            ]
+            return []
 
         raw_details = render_action(pending.action)
         details = raw_details.replace("\r\n", "\n")
@@ -299,7 +464,9 @@ class TuiApp:
         except asyncio.CancelledError:
             return
         if exc is not None:
-            self._append_history(Text(f"[background error] {exc}", style="red"))
+            self._append_history(
+                self._block("error", f"background task failed: {exc}")
+            )
 
     async def _event_consumer(self) -> None:
         try:
@@ -309,14 +476,14 @@ class TuiApp:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._append_history(Text(f"[event consumer error] {exc}", style="red"))
+            self._append_history(self._block("error", f"event consumer failed: {exc}"))
 
     async def _handle_event(self, msg: Any) -> None:
         if isinstance(msg, EvSessionConfigured):
             self._append_history(
-                Text(
+                self._block(
+                    "session",
                     f"session {msg.session_id} (model={msg.model}, cwd={msg.cwd})",
-                    style="dim",
                 )
             )
         elif isinstance(msg, EvTurnStarted):
@@ -326,19 +493,28 @@ class TuiApp:
             self._delta_buf += msg.delta
         elif isinstance(msg, EvAgentMessage):
             self._delta_buf = ""
-            self._append_history(Text(msg.content))
+            self._append_history(self._block("assistant", msg.content))
         elif isinstance(msg, EvToolCallStarted):
             self._append_history(
-                Text(f"  -> {msg.tool_name}(call_id={msg.call_id})", style="yellow")
+                self._block(
+                    "tool",
+                    f"{msg.tool_name} started (call_id={msg.call_id})",
+                )
             )
         elif isinstance(msg, EvToolCallCompleted):
-            color = "green" if msg.success else "red"
             tag = "ok" if msg.success else "fail"
-            preview = msg.body[:200].replace("\n", " ")
-            self._append_history(Text(f"    [{tag}] {preview}", style=color))
+            preview = self._single_line(msg.body, max_chars=240)
+            style = "green" if msg.success else "red"
+            self._append_history(
+                self._block("tool", f"[{tag}] {preview}", body_style=style)
+            )
         elif isinstance(msg, EvPlanUpdate):
-            lines = "\n".join(f"  - [{p.status.value}] {p.step}" for p in msg.plan)
-            self._append_history(Text(f"plan:\n{lines}", style="cyan"))
+            lines = "\n".join(
+                f"{self._plan_marker(p.status.value)} {p.step}" for p in msg.plan
+            )
+            if msg.explanation:
+                lines = f"{msg.explanation}\n{lines}"
+            self._append_history(self._block("plan", lines))
         elif isinstance(msg, EvTokenCount):
             self._status.input_tokens = msg.input
             self._status.output_tokens = msg.output
@@ -348,13 +524,15 @@ class TuiApp:
             self._start_approval(msg.request_id, msg.action, is_exec=False)
         elif isinstance(msg, EvTurnCompleted):
             self._status.turn_state = "idle"
+            self._delta_buf = ""
         elif isinstance(msg, EvTurnAborted):
             self._status.turn_state = "idle"
-            self._append_history(Text(f"[turn aborted: {msg.reason}]", style="yellow"))
+            self._delta_buf = ""
+            self._append_history(self._block("system", f"turn aborted: {msg.reason}"))
         elif isinstance(msg, EvWarning):
-            self._append_history(Text(f"[warn] {msg.message}", style="yellow"))
+            self._append_history(self._block("warning", msg.message))
         elif isinstance(msg, EvError):
-            self._append_history(Text(f"[error] {msg.message}", style="red"))
+            self._append_history(self._block("error", msg.message))
         elif isinstance(msg, EvShutdownComplete):
             self._shutting_down = True
             self._exit_application()
@@ -382,7 +560,122 @@ class TuiApp:
             self._pending_approval = pending
         else:
             self._approval_queue.append(pending)
-        self._append_history(Text(f"[approval required] {action.summary}", style="yellow"))
+        self._append_history(self._block("approval", action.summary))
+
+    def _block(self, label: str, body: str, *, body_style: str = "") -> Text:
+        body = body.strip() or "<empty>"
+        heading = _BLOCK_HEADINGS.get(label, label.upper())
+        heading_style = _BLOCK_HEADING_STYLES.get(label, "bold")
+        resolved_body_style = body_style or _BLOCK_BODY_STYLES.get(label, "")
+
+        text = Text()
+        text.append(f"{heading}\n", style=heading_style)
+        for line in body.splitlines():
+            text.append("  ", style="dim")
+            text.append(f"{line}\n", style=resolved_body_style)
+        return text
+
+    def _rebuild_history_cache(self) -> None:
+        merged = Text()
+        if not self._history:
+            merged.append("Codewright", style="bold cyan")
+            merged.append("\n  session ready", style="dim")
+        else:
+            for index, block in enumerate(self._history):
+                if index:
+                    merged.append("\n")
+                merged.append_text(block)
+
+        self._history_rich = merged
+        self._history_plain = merged.plain
+        self._history_version += 1
+        self._history_render_cache_key = None
+
+    def _render_history_lines(self, width: int) -> list[list[tuple[str, str]]]:
+        render_width = max(20, width)
+        cache_key = (self._history_version, render_width)
+        if self._history_render_cache_key == cache_key:
+            return self._history_rendered_lines
+
+        output = StringIO()
+        console = Console(
+            file=output,
+            force_terminal=True,
+            color_system="standard",
+            legacy_windows=False,
+            width=render_width,
+        )
+        console.print(
+            self._history_rich,
+            end="",
+            highlight=False,
+            markup=False,
+            soft_wrap=False,
+        )
+        fragments = ANSI(output.getvalue()).__pt_formatted_text__()
+        lines = [list(line) for line in split_lines(fragments)] or [[("", "")]]
+
+        self._history_render_cache_key = cache_key
+        self._history_rendered_lines = lines
+        return lines
+
+    def _set_history_layout(self, *, line_count: int, visible_height: int) -> None:
+        self._history_content_line_count = max(1, line_count)
+        self._history_view_height = max(1, visible_height)
+        max_top = self._history_max_top_line()
+        if self._history_follow_tail or max_top == 0:
+            self._history_follow_tail = True
+            self._history_top_line_target = max_top
+        else:
+            self._history_top_line_target = min(
+                max(0, self._history_top_line_target),
+                max_top,
+            )
+
+    def _history_top_line(self) -> int:
+        max_top = self._history_max_top_line()
+        if self._history_follow_tail:
+            self._history_top_line_target = max_top
+        else:
+            self._history_top_line_target = min(
+                max(0, self._history_top_line_target),
+                max_top,
+            )
+        return self._history_top_line_target
+
+    def _history_max_top_line(self) -> int:
+        return max(0, self._history_content_line_count - self._history_view_height)
+
+    def _history_scroll_status(self) -> str:
+        max_top = self._history_max_top_line()
+        if max_top == 0:
+            return ""
+        top = self._history_top_line()
+        if self._history_follow_tail:
+            return "tail"
+        return f"history {top + 1}/{max_top + 1}"
+
+    @staticmethod
+    def _single_line(text: str, *, max_chars: int) -> str:
+        line = " ".join(text.split())
+        if len(line) <= max_chars:
+            return line
+        return line[: max(0, max_chars - 3)] + "..."
+
+    @staticmethod
+    def _compact_path(path: str, *, max_chars: int) -> str:
+        if len(path) <= max_chars:
+            return path
+        keep = max(8, max_chars - 3)
+        return "..." + path[-keep:]
+
+    @staticmethod
+    def _plan_marker(status: str) -> str:
+        if status == "completed":
+            return "[x]"
+        if status == "in_progress":
+            return "[>]"
+        return "[ ]"
 
 
 __all__ = ["TuiApp"]
