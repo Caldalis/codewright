@@ -18,6 +18,7 @@ from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UICo
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output.base import Output
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import TextArea
 from rich.console import Console
 from rich.text import Text
@@ -106,6 +107,7 @@ class _TranscriptControl(UIControl):
         self._owner = owner
 
     def create_content(self, width: int, height: int) -> UIContent:
+        self._owner._set_terminal_width(width)
         lines = self._owner._render_history_lines(width)
         visible_height = max(1, height or len(lines) or 1)
         self._owner._set_history_layout(
@@ -156,6 +158,8 @@ class TuiApp:
         self._history_view_height: int = 1
         self._history_top_line_target: int = 0
         self._history_follow_tail: bool = True
+        self._terminal_width: int = 100
+        self._status_details_visible: bool = False
         self._delta_buf: str = ""
         self._status = StatusBarState(
             model=session.model,
@@ -257,6 +261,17 @@ class TuiApp:
                     filter=Condition(lambda: self._pending_approval is not None),
                 ),
                 self._input_view,
+                ConditionalContainer(
+                    Window(
+                        height=1,
+                        content=FormattedTextControl(self._status_detail_fragments),
+                        style="class:status.detail",
+                    ),
+                    filter=Condition(
+                        lambda: self._status_details_visible
+                        and self._pending_approval is None
+                    ),
+                ),
                 Window(
                     height=1,
                     content=FormattedTextControl(self._status_fragments),
@@ -281,6 +296,8 @@ class TuiApp:
                     "input": "#d7d7d7",
                     "status": "bg:#202124 #a8a8a8",
                     "status.brand": "bold #7dd3fc bg:#202124",
+                    "status.detail": "bg:#181818 #a8a8a8",
+                    "status.detail.key": "bold #d7d7d7 bg:#181818",
                     "status.key": "bold #d7d7d7 bg:#202124",
                     "status.warn": "bold #facc15 bg:#202124",
                 }
@@ -354,68 +371,183 @@ class TuiApp:
         self._history_top_line_target = self._history_max_top_line()
         self._invalidate()
 
+    @property
+    def input_is_empty(self) -> bool:
+        if self._input_view is None:
+            return True
+        return not self._input_view.text
+
+    def toggle_status_details(self) -> None:
+        self._status_details_visible = not self._status_details_visible
+        self._invalidate()
+
     def _status_fragments(self) -> list[tuple[str, str]]:
-        cwd = self._compact_path(self._status.cwd, max_chars=36)
-        fragments: list[tuple[str, str]] = [
-            ("class:status.brand", " Codewright "),
-            ("class:status", f" model={self._status.model}"),
-            ("class:status", f" cwd={cwd}"),
-            ("class:status", " | "),
-            ("class:status.key", "state "),
-            ("class:status", self._status.turn_state),
-            ("class:status", " | "),
-            ("class:status.key", "tokens "),
-            ("class:status", f"{self._status.input_tokens}/{self._status.output_tokens}"),
+        width = self._status_width()
+        if self._pending_approval is not None:
+            return self._approval_status_fragments(width)
+
+        parts: list[list[tuple[str, str]]] = [
+            [("class:status.brand", " Codewright")],
+            [("class:status", self._status.turn_state)],
+            [("class:status.key", "tok "), ("class:status", self._token_text())],
         ]
+        if width >= 52:
+            parts.insert(1, [("class:status", self._compact_model(width))])
         if self._status.pending_approvals:
-            fragments.extend(
+            parts.append(
                 [
-                    ("class:status", " | "),
                     ("class:status.warn", "approval "),
                     ("class:status", str(self._status.pending_approvals)),
                 ]
             )
         if self._status.subagent_count:
-            fragments.extend(
+            parts.append(
                 [
-                    ("class:status", " | "),
                     ("class:status.key", "agents "),
                     ("class:status", str(self._status.subagent_count)),
                 ]
             )
         scroll_text = self._history_scroll_status()
         if scroll_text:
-            fragments.extend(
-                [
-                    ("class:status", " | "),
-                    ("class:status.warn", scroll_text),
-                ]
-            )
+            parts.append([("class:status.warn", scroll_text)])
         if self._delta_buf:
             preview = self._single_line(
-                self._delta_buf, max_chars=_MAX_STREAM_PREVIEW_CHARS
+                self._delta_buf,
+                max_chars=min(_MAX_STREAM_PREVIEW_CHARS, max(24, width // 3)),
             )
-            fragments.extend(
+            parts.append(
                 [
-                    ("class:status", " | "),
                     ("class:status.key", "stream "),
                     ("class:status", preview),
                 ]
             )
-        fragments.extend(
+        if width >= 68:
+            parts.append([("class:status.key", "F1 "), ("class:status", "details")])
+        if width >= 84:
+            parts.append([("class:status.key", "Ctrl-C "), ("class:status", "interrupt")])
+            parts.append([("class:status.key", "Ctrl-D "), ("class:status", "exit")])
+
+        return self._fit_status_parts(parts, width)
+
+    def _status_detail_fragments(self) -> list[tuple[str, str]]:
+        width = self._status_width()
+        model_chars = max(12, min(32, width // 3))
+        cwd_chars = max(12, min(72, width // 3))
+        scroll_text = self._history_scroll_status() or "bottom"
+        parts: list[list[tuple[str, str]]] = [
             [
-                ("class:status", " | "),
-                ("class:status.key", "PgUp/PgDn "),
-                ("class:status", "scroll "),
-                ("class:status.key", "Ctrl-End "),
-                ("class:status", "bottom "),
-                ("class:status.key", "Ctrl-C "),
-                ("class:status", "interrupt "),
-                ("class:status.key", "Ctrl-D "),
-                ("class:status", "exit"),
-            ]
+                ("class:status.detail.key", "model "),
+                (
+                    "class:status.detail",
+                    self._single_line(self._status.model, max_chars=model_chars),
+                ),
+            ],
+            [
+                ("class:status.detail.key", "cwd "),
+                ("class:status.detail", self._compact_path(self._status.cwd, max_chars=cwd_chars)),
+            ],
+            [
+                ("class:status.detail.key", "tokens "),
+                ("class:status.detail", self._token_text()),
+            ],
+            [
+                ("class:status.detail.key", "scroll "),
+                ("class:status.detail", scroll_text),
+            ],
+            [
+                ("class:status.detail.key", "PgUp/PgDn "),
+                ("class:status.detail", "scroll"),
+            ],
+            [
+                ("class:status.detail.key", "Ctrl-End "),
+                ("class:status.detail", "bottom"),
+            ],
+            [
+                ("class:status.detail.key", "F1 "),
+                ("class:status.detail", "hide"),
+            ],
+        ]
+        return self._fit_status_parts(
+            parts,
+            width,
+            base_style="class:status.detail",
         )
-        return fragments
+
+    def _approval_status_fragments(self, width: int) -> list[tuple[str, str]]:
+        parts: list[list[tuple[str, str]]] = [
+            [("class:status.warn", "Approval required")],
+            [("class:status.key", "y "), ("class:status", "yes")],
+            [("class:status.warn", "n "), ("class:status", "no")],
+            [("class:status.warn", "a "), ("class:status", "abort")],
+            [("class:status.key", "s "), ("class:status", "session")],
+        ]
+        return self._fit_status_parts(parts, width)
+
+    def _fit_status_parts(
+        self,
+        parts: list[list[tuple[str, str]]],
+        width: int,
+        *,
+        base_style: str = "class:status",
+    ) -> list[tuple[str, str]]:
+        result: list[tuple[str, str]] = []
+        used = 0
+        for part in parts:
+            chunk = ([(base_style, " | ")] if result else []) + part
+            chunk_width = self._fragments_width(chunk)
+            if used + chunk_width <= width:
+                result.extend(chunk)
+                used += chunk_width
+        if result:
+            return result
+        if not parts:
+            return [(base_style, "")]
+        return self._truncate_fragments(parts[0], width)
+
+    @staticmethod
+    def _fragments_width(fragments: list[tuple[str, str]]) -> int:
+        return sum(get_cwidth(text) for _, text in fragments)
+
+    @staticmethod
+    def _truncate_fragments(
+        fragments: list[tuple[str, str]], width: int
+    ) -> list[tuple[str, str]]:
+        if width <= 0:
+            return []
+        text = "".join(fragment for _, fragment in fragments)
+        if get_cwidth(text) <= width:
+            return fragments
+        style = fragments[0][0] if fragments else ""
+        if width <= 3:
+            return [(style, "." * width)]
+        return [(style, text[: width - 3] + "...")]
+
+    def _set_terminal_width(self, width: int) -> None:
+        self._terminal_width = max(20, width)
+
+    def _status_width(self) -> int:
+        if self._application is not None:
+            with suppress(Exception):
+                return max(20, self._application.output.get_size().columns)
+        return max(20, self._terminal_width)
+
+    def _compact_model(self, width: int) -> str:
+        max_chars = 20 if width < 76 else 32
+        return self._single_line(self._status.model, max_chars=max_chars)
+
+    def _token_text(self) -> str:
+        return (
+            f"{self._compact_number(self._status.input_tokens)}/"
+            f"{self._compact_number(self._status.output_tokens)}"
+        )
+
+    @staticmethod
+    def _compact_number(value: int) -> str:
+        if value >= 1_000_000:
+            return f"{value // 1_000_000}m"
+        if value >= 1_000:
+            return f"{value // 1_000}k"
+        return str(value)
 
     def _approval_fragments(self) -> list[tuple[str, str]]:
         pending = self._pending_approval
@@ -652,7 +784,7 @@ class TuiApp:
             return ""
         top = self._history_top_line()
         if self._history_follow_tail:
-            return "tail"
+            return ""
         return f"history {top + 1}/{max_top + 1}"
 
     @staticmethod

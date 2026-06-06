@@ -15,6 +15,7 @@ def install_keybindings(app: TuiApp) -> KeyBindings:
 
     kb = KeyBindings()
     approval_active = Condition(lambda: app.has_pending_approval)
+    input_empty = Condition(lambda: app.input_is_empty)
 
     @kb.add("c-c")
     def _(event) -> None:
@@ -39,6 +40,14 @@ def install_keybindings(app: TuiApp) -> KeyBindings:
     @kb.add("c-end")
     def _(event) -> None:
         app.scroll_history_to_bottom()
+
+    @kb.add("f1")
+    def _(event) -> None:
+        app.toggle_status_details()
+
+    @kb.add("?", filter=input_empty)
+    def _(event) -> None:
+        app.toggle_status_details()
 
     @kb.add("y", filter=approval_active)
     def _(event) -> None:
