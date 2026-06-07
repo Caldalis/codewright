@@ -5,16 +5,16 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from codewright.agent.approval import ApprovalBroker
 from codewright.agent.cancellation import CancellationToken
 from codewright.agent.mailbox import Mailbox
 from codewright.agent.rwlock import AsyncRwLock
+from codewright.agent.turn_cancellation import TurnCancellationManager
 from codewright.protocol import (
     AgentPath,
     AskForApproval,
     Event,
     EventMsg,
-    EvExecApprovalRequest,
-    EvPatchApprovalRequest,
     EvSessionConfigured,
     EvWarning,
     Op,
@@ -102,10 +102,12 @@ class Session:
 
         self._tx_sub: asyncio.Queue[Submission] = asyncio.Queue(maxsize=queue_maxsize)
         self._tx_event: asyncio.Queue[Event] = asyncio.Queue()
-        self._pending_approvals: dict[str, asyncio.Future[ReviewDecision]] = {}
         self._cancellation_token = CancellationToken()
-        self._queued_turn_cancellation_tokens: dict[str, CancellationToken] = {}
-        self._active_turn_cancellation_token: CancellationToken | None = None
+        self._turn_cancellation = TurnCancellationManager(self._cancellation_token)
+        self._approvals = ApprovalBroker(
+            emit_event=self.emit_event,
+            cancellation_tokens=self._turn_cancellation.approval_tokens,
+        )
         self._shutdown_complete = asyncio.Event()
 
         self._loop_task: asyncio.Task[None] = asyncio.create_task(
@@ -135,40 +137,24 @@ class Session:
         if await self._handle_out_of_band_op(submission):
             return
         if isinstance(submission.op, OpUserTurn):
-            self._prepare_turn_cancellation(submission.id)
+            self._turn_cancellation.prepare(submission.id)
         await self._tx_sub.put(submission)
 
     async def _handle_out_of_band_op(self, sub: Submission) -> bool:
         op = sub.op
 
         if isinstance(op, OpInterrupt):
-            self._cancel_current_or_queued_turn()
+            self._turn_cancellation.cancel_current_or_queued()
             return True
         if isinstance(op, OpExecApprovalResponse):
-            resolved = self._resolve_pending_approval(op.request_id, op.decision)
-            if not resolved:
-                await self.emit_event(
-                    EvWarning(
-                        message=(
-                            "exec approval response for unknown "
-                            f"request_id={op.request_id!r}"
-                        )
-                    ),
-                    sub.id,
-                )
+            await self._approvals.resolve_exec_response(
+                op.request_id, op.decision, sub.id
+            )
             return True
         if isinstance(op, OpPatchApprovalResponse):
-            resolved = self._resolve_pending_approval(op.request_id, op.decision)
-            if not resolved:
-                await self.emit_event(
-                    EvWarning(
-                        message=(
-                            "patch approval response for unknown "
-                            f"request_id={op.request_id!r}"
-                        )
-                    ),
-                    sub.id,
-                )
+            await self._approvals.resolve_patch_response(
+                op.request_id, op.decision, sub.id
+            )
             return True
         return False
 
@@ -296,86 +282,19 @@ class Session:
 
 
     async def request_approval(self, action: PendingAction) -> ReviewDecision:
-        request_id = uuid.uuid4().hex
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[ReviewDecision] = loop.create_future()
-        self._pending_approvals[request_id] = future
-
-        if action.kind == "exec":
-            event: EventMsg = EvExecApprovalRequest(request_id=request_id, action=action)
-        elif action.kind == "patch":
-            event = EvPatchApprovalRequest(request_id=request_id, action=action)
-        else:
-            self._pending_approvals.pop(request_id, None)
-            raise NotImplementedError(
-                f"approval kind {action.kind!r} not in MVP — only 'exec' and 'patch'"
-            )
-
-        await self.emit_event(event)
-
-        cancel_waits = [
-            asyncio.create_task(token.wait())
-            for token in self._approval_cancellation_tokens()
-        ]
-        try:
-            done, _pending = await asyncio.wait(
-                [future, *cancel_waits], return_when=asyncio.FIRST_COMPLETED
-            )
-            if future in done:
-                return future.result()
-            self._pending_approvals.pop(request_id, None)
-            raise asyncio.CancelledError("turn interrupted while awaiting approval")
-        except asyncio.CancelledError:
-            self._pending_approvals.pop(request_id, None)
-            if not future.done():
-                future.cancel()
-            raise
-        finally:
-            for task in cancel_waits:
-                if not task.done():
-                    task.cancel()
+        return await self._approvals.request(action)
 
     @property
     def cancellation_token(self) -> CancellationToken:
         return self._cancellation_token
 
-    def _prepare_turn_cancellation(self, sub_id: str) -> CancellationToken:
-        token = self._cancellation_token.child()
-        self._queued_turn_cancellation_tokens[sub_id] = token
-        return token
-
-    def _activate_turn_cancellation(self, sub_id: str) -> CancellationToken:
-        token = self._queued_turn_cancellation_tokens.pop(sub_id, None)
-        if token is None:
-            token = self._cancellation_token.child()
-        self._active_turn_cancellation_token = token
-        return token
-
-    def _clear_turn_cancellation(self, token: CancellationToken) -> None:
-        if self._active_turn_cancellation_token is token:
-            self._active_turn_cancellation_token = None
-
-    def _cancel_current_or_queued_turn(self) -> bool:
-        token = self._active_turn_cancellation_token
-        if token is not None:
-            token.cancel()
-            return True
-        for token in self._queued_turn_cancellation_tokens.values():
-            if not token.is_cancelled():
-                token.cancel()
-                return True
-        return False
-
-    def _approval_cancellation_tokens(self) -> list[CancellationToken]:
-        tokens = [self._cancellation_token]
-        active = self._active_turn_cancellation_token
-        if active is not None and active is not self._cancellation_token:
-            tokens.append(active)
-        return tokens
+    @property
+    def turn_cancellation(self) -> TurnCancellationManager:
+        return self._turn_cancellation
 
     async def shutdown(self) -> None:
         self._cancellation_token.cancel()
-        self._cancel_current_or_queued_turn()
+        self._turn_cancellation.cancel_current_or_queued()
         if not self._loop_task.done():
             from codewright.protocol import OpShutdown
 
@@ -487,17 +406,5 @@ class Session:
                     self.plan = [PlanItem(**it) for it in items_raw]
                 except Exception:
                     pass
-
-
-
-    def _resolve_pending_approval(
-        self, request_id: str, decision: ReviewDecision
-    ) -> bool:
-        future = self._pending_approvals.pop(request_id, None)
-        if future is None or future.done():
-            return False
-        future.set_result(decision)
-        return True
-
 
 _ = Any

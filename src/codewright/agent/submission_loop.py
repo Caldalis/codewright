@@ -52,7 +52,7 @@ async def _dispatch(session: Session, sub: Submission) -> bool:
         if session.llm_enabled:
             await _drive_user_turn(session, sub, op)
         else:
-            cancellation = session._activate_turn_cancellation(sub.id)
+            cancellation = session.turn_cancellation.activate(sub.id)
             try:
                 await session.emit_event(EvTurnStarted(turn_id=sub.id), sub.id)
                 if cancellation.is_cancelled():
@@ -69,7 +69,7 @@ async def _dispatch(session: Session, sub: Submission) -> bool:
                         sub.id,
                     )
             finally:
-                session._clear_turn_cancellation(cancellation)
+                session.turn_cancellation.clear(cancellation)
         return False
 
     if isinstance(op, OpCompact):
@@ -112,7 +112,7 @@ async def _drive_user_turn(session: Session, sub: Submission, op: OpUserTurn) ->
     from codewright.agent.turn_context import TurnContext
 
     user_input = "\n".join(item.text for item in op.items)
-    cancellation = session._activate_turn_cancellation(sub.id)
+    cancellation = session.turn_cancellation.activate(sub.id)
 
     context_manager = session.context
     turn_context = TurnContext(
@@ -130,4 +130,4 @@ async def _drive_user_turn(session: Session, sub: Submission, op: OpUserTurn) ->
     try:
         await run_turn(session, turn_context, user_input, sub_id=sub.id)
     finally:
-        session._clear_turn_cancellation(cancellation)
+        session.turn_cancellation.clear(cancellation)
