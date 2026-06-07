@@ -29,12 +29,30 @@ def _content_to_str(content: str | tuple[ContentBlock, ...]) -> str:
 
 def _to_provider_messages(messages: list[CanonicalMessage]) -> list[dict[str, Any]]:
 
-    out: list[dict[str, Any]] = []
+    system_parts: list[str] = []
+    body_messages: list[CanonicalMessage] = []
     for m in messages:
-        if m.role == "developer":
-          
-            out.append({"role": "system", "content": _content_to_str(m.content)})
+        if m.role == "system":
+            text = _content_to_str(m.content)
+            if text:
+                system_parts.append(text)
             continue
+        if m.role == "developer":
+            text = _content_to_str(m.content)
+            if text:
+                system_parts.append(
+                    "<developer_instructions>\n"
+                    f"{text}\n"
+                    "</developer_instructions>"
+                )
+            continue
+        body_messages.append(m)
+
+    out: list[dict[str, Any]] = []
+    if system_parts:
+        out.append({"role": "system", "content": "\n\n".join(system_parts)})
+
+    for m in body_messages:
         if m.role == "assistant" and m.tool_calls:
             entry: dict[str, Any] = {
                 "role": "assistant",
@@ -165,9 +183,12 @@ class ChatCompletionsAdapter(LLMProvider):
                 async for line in response.aiter_lines():
                     if not line:
                         continue
-                    if not line.startswith("data:"):
+                    if line.startswith("data:"):
+                        data = line[len("data:") :].strip()
+                    elif line.lstrip().startswith("{"):
+                        data = line.strip()
+                    else:
                         continue
-                    data = line[len("data:") :].strip()
                     if data == "[DONE]":
                         break
                     try:
@@ -175,6 +196,11 @@ class ChatCompletionsAdapter(LLMProvider):
                     except json.JSONDecodeError:
                         # SSE comment line / keep-alive — provider-dependent.
                         continue
+
+                    provider_error = _provider_error_message(chunk)
+                    if provider_error is not None:
+                        yield StreamEvent(kind="error", error=provider_error)
+                        return
 
                     async for event in _translate_chunk(
                         chunk, tool_names, tool_ids, tool_args
@@ -261,3 +287,18 @@ async def _translate_chunk(
                 arguments_delta=func_args,
                 tool_call_index=idx,
             )
+
+
+def _provider_error_message(chunk: dict[str, Any]) -> str | None:
+    err = chunk.get("error")
+    if err is None and chunk.get("type") == "error":
+        err = chunk
+    if err is None:
+        return None
+    if isinstance(err, dict):
+        message = err.get("message") or json.dumps(err, ensure_ascii=False)
+        code = err.get("code")
+        if code is not None:
+            return f"provider error {code}: {message}"
+        return f"provider error: {message}"
+    return f"provider error: {err}"
