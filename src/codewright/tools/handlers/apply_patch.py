@@ -65,12 +65,23 @@ class ApplyPatchParams(ParameterModel):
     patch: str = Field(
         ...,
         description=(
-            "Envelope text. Begins with '*** Begin Patch' and ends with "
-            "'*** End Patch'. Inside: '*** Add File: <path>' (each new line "
-            "prefixed with '+'); '*** Delete File: <path>'; '*** Update File: "
-            "<path>' optionally followed by '*** Move to: <new path>' and one "
-            "or more '@@ <header>' hunks. Within a hunk: ' line' = context, "
-            "'-line' = remove, '+line' = add."
+            "Structured patch envelope for workspace-relative file edits. The "
+            "text must start with '*** Begin Patch' and end with '*** End "
+            "Patch'. Supported file ops are: '*** Add File: <path>' followed "
+            "by new file lines prefixed with '+'; '*** Delete File: <path>'; "
+            "and '*** Update File: <path>' optionally followed by '*** Move "
+            "to: <new path>'. Paths must be relative and must not contain '..' "
+            "or drive/absolute prefixes. Add requires a missing path; "
+            "Delete/Update require an existing path; Move writes the updated "
+            "contents to the destination and deletes the source, and the "
+            "destination must not exist unless an earlier op deletes it. Each "
+            "Update needs one or more hunks. Start a hunk with '@@' or '@@ "
+            "<anchor>'; anchors and hunks are matched in file order from the "
+            "previous hunk, so do not jump backward to an earlier anchor. "
+            "Within a hunk, prefix context lines with one space, removed lines "
+            "with '-', and added lines with '+'. Use '*** End of File' inside "
+            "a hunk to require a match at EOF. Do not create overlapping "
+            "hunks; combine conflicting edits into one hunk."
         ),
     )
 
