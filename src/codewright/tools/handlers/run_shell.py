@@ -105,8 +105,26 @@ class RunShellHandler(ToolHandler):
         cwd: Path,
         cancellation_token,
     ) -> ToolResult:
-        # Simplified from codex-rs/core/src/exec.rs.
-        proc, pgid = await _spawn(params.command, cwd)
+        start = time.monotonic()
+        try:
+            proc, pgid = await _spawn(params.command, cwd)
+        except OSError as exc:
+            wall_time = time.monotonic() - start
+            command_text = " ".join(shlex.quote(c) for c in params.command)
+            body = (
+                "Command failed to start\n"
+                f"Command: {command_text}\n"
+                f"Error: {type(exc).__name__}: {exc}"
+            )
+            structured = {
+                "exit_code": None,
+                "wall_time_s": round(wall_time, 3),
+                "cancelled": False,
+                "timed_out": False,
+                "spawn_error": True,
+                "error_type": type(exc).__name__,
+            }
+            return ToolResult(success=False, body=body, structured_data=structured)
 
         stdout_buf: list[bytes] = []
         stderr_buf: list[bytes] = []
@@ -139,11 +157,9 @@ class RunShellHandler(ToolHandler):
         stdout_task = asyncio.create_task(drain(proc.stdout, stdout_buf))
         stderr_task = asyncio.create_task(drain(proc.stderr, stderr_buf))
 
-        start = time.monotonic()
         wait_proc = asyncio.create_task(proc.wait())
         wait_cancel = asyncio.create_task(cancellation_token.wait())
-        # asyncio.sleep is the timeout; we race it via wait FIRST_COMPLETED so
-        # cancellation never has to wait for the full timeout.
+
         wait_timeout = asyncio.create_task(asyncio.sleep(params.timeout_ms / 1000.0))
 
         try:
