@@ -90,10 +90,7 @@ def _to_provider_tools(tools: list[Any]) -> list[dict[str, Any]]:
     for t in tools:
         name = getattr(t, "name", None)
         description = getattr(t, "description", "")
-        if hasattr(t, "model_json_schema"):
-            parameters = t.model_json_schema()
-        else:
-            parameters = getattr(t, "parameters", {"type": "object"})
+        parameters = _tool_parameters(t)
         if not name:
             continue
         out.append(
@@ -107,6 +104,22 @@ def _to_provider_tools(tools: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _tool_parameters(tool: Any) -> dict[str, Any]:
+    parameters = getattr(tool, "parameters", None)
+    if isinstance(parameters, dict):
+        return parameters or {"type": "object", "properties": {}}
+    if hasattr(parameters, "to_json_schema"):
+        schema = parameters.to_json_schema()
+        if isinstance(schema, dict):
+            return schema
+
+    if hasattr(parameters, "model_json_schema"):
+        schema = parameters.model_json_schema()
+        if isinstance(schema, dict):
+            return schema
+    return {"type": "object", "properties": {}}
 
 
 class ChatCompletionsAdapter(LLMProvider):

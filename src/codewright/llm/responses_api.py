@@ -109,10 +109,7 @@ def _to_responses_tools(tools: list[Any]) -> list[dict[str, Any]]:
         if not name:
             continue
         description = getattr(t, "description", "") or ""
-        if hasattr(t, "model_json_schema"):
-            parameters = t.model_json_schema()
-        else:
-            parameters = getattr(t, "parameters", {"type": "object"})
+        parameters = _tool_parameters(t)
         out.append(
             {
                 "type": "function",
@@ -123,6 +120,22 @@ def _to_responses_tools(tools: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _tool_parameters(tool: Any) -> dict[str, Any]:
+    parameters = getattr(tool, "parameters", None)
+    if isinstance(parameters, dict):
+        return parameters or {"type": "object", "properties": {}}
+    if hasattr(parameters, "to_json_schema"):
+        schema = parameters.to_json_schema()
+        if isinstance(schema, dict):
+            return schema
+
+    if hasattr(parameters, "model_json_schema"):
+        schema = parameters.model_json_schema()
+        if isinstance(schema, dict):
+            return schema
+    return {"type": "object", "properties": {}}
 
 
 class ResponsesApiAdapter(LLMProvider):
