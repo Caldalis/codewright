@@ -17,7 +17,16 @@ def find_hunk(
             return None
         start = idx + 1
 
-    return _match_within(file_lines, old_lines, start, is_end_of_file)
+    return seek_sequence(file_lines, old_lines, start, is_end_of_file)
+
+
+def seek_sequence(
+    file_lines: list[str],
+    pattern: list[str],
+    start: int = 0,
+    is_end_of_file: bool = False,
+) -> int | None:
+    return _match_within(file_lines, pattern, start, is_end_of_file)
 
 
 def _find_anchor(lines: list[str], anchor: str, start: int) -> int | None:
