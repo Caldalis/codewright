@@ -25,6 +25,9 @@ async def resume_session(
     workspace: WorkspaceManager | None = None,
     summarizer: Summarizer | None = None,
     approval_policy: AskForApproval | None = None,
+    model: str | None = None,
+    permission_profile: PermissionProfile | None = None,
+    role: str = "default",
     mcp_configs: list[Any] | None = None,
 ) -> Session:
 
@@ -36,12 +39,21 @@ async def resume_session(
     store = SessionStore(workspace_root)
     meta, lines = await store.load_session(session_id)
     recorder = await store.resume_recorder(session_id)
+    effective_permission_profile = permission_profile or PermissionProfile(
+        meta.permission_profile
+    )
+    effective_model = model or meta.model
+
+    if workspace is None:
+        from codewright.workspace.manager import WorkspaceManager
+
+        workspace = WorkspaceManager(workspace_root, effective_permission_profile)
 
     session = Session(
         session_id=meta.session_id,
         cwd=Path(meta.cwd),
-        permission_profile=PermissionProfile(meta.permission_profile),
-        model=meta.model,
+        permission_profile=effective_permission_profile,
+        model=effective_model,
         llm=llm,
         context_manager=context_manager,
         prompt_builder=prompt_builder,
@@ -51,6 +63,7 @@ async def resume_session(
         workspace=workspace,
         summarizer=summarizer,
         rollout=recorder,
+        role=role,
     )
 
     session.replay([ln for ln in lines if ln.type != "session_meta"])

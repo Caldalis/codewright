@@ -31,7 +31,6 @@ class Hunk:
 
 @dataclass
 class FileOp:
-    """One of three file-level operations."""
 
     kind: str  # "add" | "delete" | "update"
     path: str
@@ -121,11 +120,9 @@ def _parse_hunks(lines: list[str]) -> tuple[list[Hunk], int]:
         line = lines[i]
         stripped = line.strip()
         if stripped.startswith("*** "):
-            # Next file op — stop consuming.
             break
         if not stripped:
             if current_hunk is not None:
-                # Treat as a context line (blank).
                 current_hunk.old_lines.append("")
                 current_hunk.new_lines.append("")
             i += 1
@@ -147,7 +144,6 @@ def _parse_hunks(lines: list[str]) -> tuple[list[Hunk], int]:
             i += 1
             continue
         if current_hunk is None:
-            # Allow chunks without an explicit @@ header (codex's lenient mode).
             current_hunk = Hunk(change_context=None)
             hunks.append(current_hunk)
         prefix = line[:1]

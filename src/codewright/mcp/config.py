@@ -56,6 +56,7 @@ def load_mcp_servers_from_toml(toml_path: Path) -> list[McpServerConfig]:
 
 
 def _one(name: str, entry: dict) -> McpServerConfig:
+    entry = _normalize_transport_entry(name, entry)
     transport_raw = entry.get("transport")
     if transport_raw is None:
         if "command" in entry:
@@ -106,6 +107,27 @@ def _one(name: str, entry: dict) -> McpServerConfig:
         bearer_token_env_var=str(bearer) if bearer else None,
         startup_timeout_sec=timeout,
     )
+
+
+def _normalize_transport_entry(name: str, entry: dict) -> dict:
+    transport_raw = entry.get("transport")
+    if not isinstance(transport_raw, dict):
+        return entry
+
+    normalized = dict(entry)
+    transport_type = transport_raw.get("type")
+    if transport_type is None:
+        raise ValueError(f"[mcp_servers.{name}.transport] requires `type`")
+    normalized["transport"] = transport_type
+    for key, value in transport_raw.items():
+        if key == "type":
+            continue
+        if key in normalized:
+            raise ValueError(
+                f"[mcp_servers.{name}] duplicate `{key}` in server and transport tables"
+            )
+        normalized[key] = value
+    return normalized
 
 
 __all__ = [

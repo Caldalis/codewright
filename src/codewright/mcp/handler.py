@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
-
 from codewright.mcp.client import CallToolResult, McpClient, ToolInfo
 from codewright.mcp.client_http import HttpMcpClient
 from codewright.mcp.client_stdio import StdioMcpClient
@@ -114,12 +113,12 @@ class McpConnectionManager:
 
 
     async def list_mcp_resources(self, server_name: str) -> list[dict[str, Any]]:
-        raise NotImplementedError("mcp resources not in MVP")
+        raise NotImplementedError("mcp resources not implemented")
 
     async def read_mcp_resource(
         self, server_name: str, uri: str
     ) -> dict[str, Any]:
-        raise NotImplementedError("mcp resources not in MVP")
+        raise NotImplementedError("mcp resources not implemented")
 
 
 def _default_factory(cfg: McpServerConfig) -> McpClient:

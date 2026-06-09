@@ -1,0 +1,44 @@
+# User config: copy to ~/.codewright/config.toml
+# Effective value precedence:
+# command line arguments > environment variables > this config file > built-in defaults
+
+[llm]
+# Audit label only. Provider behavior is selected by api_style/base_url/model.
+provider = "openai"
+
+# "chat_completions" works with OpenAI-compatible providers such as DeepSeek,
+# Qwen/DashScope compatible mode, Ollama, and most local gateways.
+# "responses" uses the OpenAI Responses API.
+api_style = "chat_completions"
+
+model = "gpt-4o"
+api_key_env = "OPENAI_API_KEY"
+
+# Optional OpenAI-compatible base URL.
+# base_url = "https://api.deepseek.com/v1"
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# base_url = "http://localhost:11434/v1"
+
+[agent]
+max_context_tokens = 128000
+compact_threshold = 0.9
+default_role = "default"
+
+[workspace]
+permission_profile = "workspace_write" # read_only | workspace_write | dangerous
+
+# Optional MCP servers.
+# Tool names are registered as <server>__<tool>, for example github__create_issue.
+#
+# [mcp_servers.github]
+# transport = { type = "stdio", command = "npx", args = ["-y", "@github/mcp"] }
+#
+# [mcp_servers.linear]
+# transport = { type = "streamable_http", url = "https://mcp.linear.app/sse", bearer_token_env_var = "LINEAR_TOKEN" }
+#
+# Backward-compatible expanded form is also accepted:
+# [mcp_servers.local]
+# transport = "stdio"
+# command = "python"
+# args = ["server.py"]
+# env = { DEBUG = "1" }

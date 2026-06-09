@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 import time
 import uuid
@@ -12,6 +11,7 @@ from typing import Any
 from codewright.agent.cancellation import CancellationToken
 from codewright.agent.resume import resume_session
 from codewright.agent.session import Session
+from codewright.config import CliOverrides, CodewrightConfig, load_config
 from codewright.context.manager import ContextManager
 from codewright.llm import create_llm_provider
 from codewright.persistence.rollout import SessionMeta
@@ -55,12 +55,16 @@ def main() -> None:
     p_run.add_argument("--workspace", default=".")
     p_run.add_argument("--model", default=None)
     p_run.add_argument("--provider-base-url", default=None)
-    p_run.add_argument("--api-style", choices=("chat_completions", "responses"), default="chat_completions")
+    p_run.add_argument(
+        "--api-style",
+        choices=("chat_completions", "responses"),
+        default=None,
+    )
     p_run.add_argument("--max-context-tokens", type=int, default=None)
     p_run.add_argument(
         "--permission-profile",
         choices=tuple(p.value for p in PermissionProfile),
-        default=PermissionProfile.WORKSPACE_WRITE.value,
+        default=None,
     )
     p_run.add_argument("--print-session-id", action="store_true")
     p_run.add_argument("--no-persist", action="store_true",
@@ -71,7 +75,11 @@ def main() -> None:
     p_resume.add_argument("--workspace", default=".")
     p_resume.add_argument("--model", default=None)
     p_resume.add_argument("--provider-base-url", default=None)
-    p_resume.add_argument("--api-style", choices=("chat_completions", "responses"), default="chat_completions")
+    p_resume.add_argument(
+        "--api-style",
+        choices=("chat_completions", "responses"),
+        default=None,
+    )
     p_resume.add_argument("--message", default=None,
                           help="if given, run one turn with this prompt and exit (else launch the TUI)")
 
@@ -82,11 +90,15 @@ def main() -> None:
     p_tui.add_argument("--workspace", default=".")
     p_tui.add_argument("--model", default=None)
     p_tui.add_argument("--provider-base-url", default=None)
-    p_tui.add_argument("--api-style", choices=("chat_completions", "responses"), default="chat_completions")
+    p_tui.add_argument(
+        "--api-style",
+        choices=("chat_completions", "responses"),
+        default=None,
+    )
     p_tui.add_argument(
         "--permission-profile",
         choices=tuple(p.value for p in PermissionProfile),
-        default=PermissionProfile.WORKSPACE_WRITE.value,
+        default=None,
     )
 
     args = parser.parse_args()
@@ -121,13 +133,10 @@ async def _cmd_list(args: argparse.Namespace) -> None:
 
 
 async def _cmd_run(args: argparse.Namespace) -> None:
+    config = _effective_config(args)
     sess = await _bootstrap_session(
         workspace=_resolve_workspace(args.workspace),
-        model=args.model,
-        provider_base_url=args.provider_base_url,
-        api_style=args.api_style,
-        permission_profile=PermissionProfile(args.permission_profile),
-        max_context_tokens=args.max_context_tokens,
+        config=config,
         persist=not args.no_persist,
     )
     try:
@@ -142,17 +151,13 @@ async def _cmd_run(args: argparse.Namespace) -> None:
 
 
 async def _cmd_resume(args: argparse.Namespace) -> None:
+    config = _effective_config(args)
     workspace = _resolve_workspace(args.workspace)
-    llm = _build_llm(args.api_style, args.model or _default_model(), args.provider_base_url)
-    prompt_builder = PromptBuilder(load_default_system_prompt())
-    session = await resume_session(
-        workspace_root=workspace,
+    session = await _resume_session_from_config(
+        workspace=workspace,
         session_id=args.session_id,
-        llm=llm,
-        prompt_builder=prompt_builder,
-        workspace=WorkspaceManager(workspace, PermissionProfile.WORKSPACE_WRITE),
+        config=config,
     )
-    _register_builtin_tools(session)
     try:
         if args.message:
             await session.submit(OpUserTurn(items=[UserInputText(text=args.message)]))
@@ -168,13 +173,10 @@ async def _cmd_resume(args: argparse.Namespace) -> None:
 
 
 async def _cmd_tui(args: argparse.Namespace) -> None:
+    config = _effective_config(args)
     sess = await _bootstrap_session(
         workspace=_resolve_workspace(args.workspace),
-        model=args.model,
-        provider_base_url=args.provider_base_url,
-        api_style=args.api_style,
-        permission_profile=PermissionProfile(args.permission_profile),
-        max_context_tokens=None,
+        config=config,
         persist=True,
     )
     try:
@@ -185,45 +187,65 @@ async def _cmd_tui(args: argparse.Namespace) -> None:
         await sess.shutdown()
 
 
-
-
-def _default_model() -> str:
-    return os.environ.get("CODEWRIGHT_MODEL") or "gpt-4o-mini"
-
-
-def _api_key() -> str:
-
-    return (
-        os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("CODEWRIGHT_API_KEY")
-        or ""
+def _effective_config(args: argparse.Namespace) -> CodewrightConfig:
+    return load_config(
+        CliOverrides(
+            api_style=getattr(args, "api_style", None),
+            model=getattr(args, "model", None),
+            provider_base_url=getattr(args, "provider_base_url", None),
+            max_context_tokens=getattr(args, "max_context_tokens", None),
+            permission_profile=getattr(args, "permission_profile", None),
+        )
     )
 
 
-def _build_llm(api_style: str, model: str, base_url: str | None) -> Any:
+def _build_llm(config: CodewrightConfig) -> Any:
     return create_llm_provider(
-        api_style=api_style,  # type: ignore[arg-type]
-        api_key=_api_key(),
-        model=model,
-        base_url=base_url,
+        api_style=config.api_style,
+        api_key=config.api_key,
+        model=config.model,
+        base_url=config.provider_base_url,
     )
+
+
+def _context_manager_from_config(config: CodewrightConfig) -> ContextManager:
+    return ContextManager(
+        max_context_tokens=config.max_context_tokens,
+        compact_threshold=config.compact_threshold,
+    )
+
+
+async def _resume_session_from_config(
+    *,
+    workspace: Path,
+    session_id: str,
+    config: CodewrightConfig,
+) -> Session:
+    session = await resume_session(
+        workspace_root=workspace,
+        session_id=session_id,
+        llm=_build_llm(config),
+        context_manager=_context_manager_from_config(config),
+        prompt_builder=PromptBuilder(load_default_system_prompt()),
+        model=config.model,
+        permission_profile=config.permission_profile,
+        role=config.default_role,
+        mcp_configs=config.mcp_servers,
+    )
+    _register_builtin_tools(session)
+    return session
 
 
 async def _bootstrap_session(
     *,
     workspace: Path,
-    model: str | None,
-    provider_base_url: str | None,
-    api_style: str,
-    permission_profile: PermissionProfile,
-    max_context_tokens: int | None,
+    config: CodewrightConfig,
     persist: bool,
 ) -> Session:
-    model = model or _default_model()
-    llm = _build_llm(api_style, model, provider_base_url)
-    cm = ContextManager(max_context_tokens=max_context_tokens or 128_000)
+    llm = _build_llm(config)
+    cm = _context_manager_from_config(config)
     prompt_builder = PromptBuilder(load_default_system_prompt())
-    wm = WorkspaceManager(workspace, permission_profile)
+    wm = WorkspaceManager(workspace, config.permission_profile)
     rollout = None
     session_id = uuid.uuid4().hex
     if persist:
@@ -231,23 +253,25 @@ async def _bootstrap_session(
         meta = SessionMeta(
             session_id=session_id,
             cwd=str(workspace),
-            model=model,
-            permission_profile=permission_profile.value,
+            model=config.model,
+            permission_profile=config.permission_profile.value,
             start_time=time.time(),
         )
         rollout = await store.create_recorder(meta)
     session = Session(
         session_id=session_id,
         cwd=workspace,
-        permission_profile=permission_profile,
-        model=model,
+        permission_profile=config.permission_profile,
+        model=config.model,
         llm=llm,
         context_manager=cm,
         prompt_builder=prompt_builder,
         workspace=wm,
         rollout=rollout,
+        role=config.default_role,
     )
     _register_builtin_tools(session)
+    await session.start_mcp(config.mcp_servers)
     return session
 
 
