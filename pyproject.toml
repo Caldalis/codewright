@@ -12,6 +12,7 @@ dependencies = [
     "rich>=13.7",
     "openai>=1.40",
     "prompt-toolkit>=3.0",
+    "mcp>=1.27,<2",
 ]
 
 [project.scripts]

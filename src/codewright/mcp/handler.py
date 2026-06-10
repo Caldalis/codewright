@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
+
 from codewright.mcp.client import CallToolResult, McpClient, ToolInfo
 from codewright.mcp.client_http import HttpMcpClient
 from codewright.mcp.client_stdio import StdioMcpClient
 from codewright.mcp.config import McpServerConfig
-
 
 QUALIFIED_NAME_SEPARATOR = "__"
 
@@ -40,6 +40,7 @@ class McpConnectionManager:
         self._clients: dict[str, McpClient] = {}
         self._tools: list[ToolInfo] = []
         self._started = False
+        self._on_warning: WarningSink | None = None
 
     @property
     def server_names(self) -> list[str]:
@@ -50,6 +51,7 @@ class McpConnectionManager:
         if self._started:
             return
         self._started = True
+        self._on_warning = on_warning
         if not self._configs:
             return
 
@@ -105,11 +107,20 @@ class McpConnectionManager:
         if not self._clients:
             return
         await asyncio.gather(
-            *(_safe_shutdown(c) for c in self._clients.values()),
+            *(self._safe_shutdown(c) for c in self._clients.values()),
             return_exceptions=False,
         )
         self._clients.clear()
         self._tools.clear()
+
+    async def _safe_shutdown(self, client: McpClient) -> None:
+        try:
+            await client.shutdown()
+        except Exception as exc:
+            await _emit_warning(
+                self._on_warning,
+                f"[mcp] server {client.server_name!r} shutdown error: {exc}",
+            )
 
 
     async def list_mcp_resources(self, server_name: str) -> list[dict[str, Any]]:
@@ -127,13 +138,6 @@ def _default_factory(cfg: McpServerConfig) -> McpClient:
     if cfg.transport == "streamable_http":
         return HttpMcpClient(cfg)
     raise ValueError(f"unknown MCP transport: {cfg.transport!r}")
-
-
-async def _safe_shutdown(client: McpClient) -> None:
-    try:
-        await client.shutdown()
-    except Exception:
-        pass
 
 
 async def _emit_warning(sink: WarningSink | None, message: str) -> None:
