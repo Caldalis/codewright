@@ -18,7 +18,6 @@ from codewright.mcp.client import (
     tool_list_from_sdk,
 )
 
-
 TransportFactory = Callable[[], AbstractAsyncContextManager[Any]]
 
 _SHUTDOWN_GRACE_SEC = 5.0
@@ -41,6 +40,7 @@ class SdkMcpSession:
         self._session: ClientSession | None = None
         self._server_info: dict[str, Any] = {}
         self._error: BaseException | None = None
+        self._close_error: BaseException | None = None
 
     @property
     def session(self) -> ClientSession:
@@ -87,6 +87,8 @@ class SdkMcpSession:
             if not self._ready.is_set():
                 self._error = exc
                 self._ready.set()
+            elif not isinstance(exc, asyncio.CancelledError):
+                self._close_error = exc
             if isinstance(exc, asyncio.CancelledError):
                 raise
         finally:
@@ -98,12 +100,14 @@ class SdkMcpSession:
             return
         self._runner = None
         self._close.set()
+        timed_out = False
         if self._ready.is_set() and self._error is None:
             try:
                 await asyncio.wait_for(
                     asyncio.shield(runner), timeout=_SHUTDOWN_GRACE_SEC
                 )
             except (TimeoutError, asyncio.CancelledError):
+                timed_out = True
                 runner.cancel()
             except Exception:
                 pass
@@ -114,6 +118,16 @@ class SdkMcpSession:
                 await runner
             except (asyncio.CancelledError, Exception):
                 pass
+
+        surfaced = _meaningful_close_error(self._close_error)
+        self._close_error = None
+        if surfaced is not None:
+            raise surfaced
+        if timed_out:
+            raise TimeoutError(
+                f"MCP server {self._server_name!r} did not shut down within "
+                f"{_SHUTDOWN_GRACE_SEC:.0f}s; forced cancel (subprocess may linger)"
+            )
 
 class SdkMcpClient(McpClient):
 
@@ -157,6 +171,20 @@ def _surface(exc: BaseException) -> BaseException:
     if isinstance(exc, Exception):
         return exc
     return RuntimeError(f"MCP session failed to initialize: {exc!r}")
+
+
+def _meaningful_close_error(exc: BaseException | None) -> Exception | None:
+
+    if exc is None or isinstance(exc, asyncio.CancelledError):
+        return None
+    if isinstance(exc, BaseExceptionGroup):
+        _cancels, rest = exc.split(asyncio.CancelledError)
+        if rest is None:
+            return None
+        return rest if isinstance(rest, Exception) else RuntimeError(repr(rest))
+    if isinstance(exc, Exception):
+        return exc
+    return RuntimeError(repr(exc))
 
 
 __all__ = ["SdkMcpClient", "SdkMcpSession", "TransportFactory"]
