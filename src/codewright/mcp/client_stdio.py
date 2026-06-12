@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
@@ -32,7 +33,7 @@ class StdioMcpClient(SdkMcpClient):
             StdioServerParameters(
                 command=self._config.command or "",
                 args=list(self._config.args),
-                env=self._config.env or None,
+                env={**os.environ, **self._config.env},
             )
         )
 

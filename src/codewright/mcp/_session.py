@@ -51,11 +51,11 @@ class SdkMcpSession:
         return self._session
 
     async def initialize(self) -> dict[str, Any]:
-        if self._runner is not None:
-            return self._server_info
-        self._runner = asyncio.create_task(
-            self._run(), name=f"mcp_session[{self._server_name}]"
-        )
+        if self._runner is None:
+            self._runner = asyncio.create_task(
+                self._run(), name=f"mcp_session[{self._server_name}]"
+            )
+
         await self._ready.wait()
         if self._error is not None:
             raise _surface(self._error)
@@ -106,8 +106,11 @@ class SdkMcpSession:
                 await asyncio.wait_for(
                     asyncio.shield(runner), timeout=_SHUTDOWN_GRACE_SEC
                 )
-            except (TimeoutError, asyncio.CancelledError):
+            except TimeoutError:
                 timed_out = True
+                runner.cancel()
+            except asyncio.CancelledError:
+                # Cancelled, not timed out: reap the runner without misreporting.
                 runner.cancel()
             except Exception:
                 pass

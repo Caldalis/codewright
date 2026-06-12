@@ -64,7 +64,8 @@ class McpConnectionManager:
                 async with asyncio.timeout(cfg.startup_timeout_sec):
                     await client.initialize()
                     tools = await client.list_tools()
-            except (TimeoutError, Exception) as exc:
+            except (Exception, BaseExceptionGroup) as exc:
+                # Isolate this server's startup failure
                 await _emit_warning(
                     on_warning,
                     f"[mcp] server {cfg.name!r} failed to start: {exc}",
