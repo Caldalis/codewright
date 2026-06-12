@@ -26,7 +26,7 @@ class AsyncRwLock:
     async def _release_read(self) -> None:
         async with self._cond:
             self._readers -= 1
-  
+
             if self._readers == 0:
                 self._cond.notify_all()
 

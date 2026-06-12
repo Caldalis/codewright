@@ -168,7 +168,7 @@ class ResponsesApiAdapter(LLMProvider):
         tools: list[Any],
         turn_context: Any,
     ) -> AsyncIterator[StreamEvent]:
-        del turn_context  
+        del turn_context
         instructions, input_items = _to_responses_input(messages)
         provider_tools = _to_responses_tools(tools)
 

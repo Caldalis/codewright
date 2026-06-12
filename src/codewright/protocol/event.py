@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from codewright.protocol.approval import PendingAction
 
 
-
 class PlanItemStatus(StrEnum):
 
     PENDING = "pending"

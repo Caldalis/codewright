@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Self
 
-
 _ROOT_SEGMENT = "root"
 _CHILD_SEGMENT_RE = re.compile(r"^[a-z][a-z0-9]*_[a-z0-9_]+$")
 

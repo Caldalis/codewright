@@ -10,7 +10,6 @@ from mcp.client.streamable_http import streamable_http_client
 from codewright.mcp._session import SdkMcpClient
 from codewright.mcp.config import McpServerConfig
 
-
 _REQUEST_TIMEOUT_SEC = 60.0
 
 

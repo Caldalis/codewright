@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 RolloutLineType = Literal[
     "session_meta",
     "user_msg",

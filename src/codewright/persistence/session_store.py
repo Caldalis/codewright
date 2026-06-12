@@ -71,7 +71,7 @@ class SessionStore:
                 try:
                     line = RolloutLine.model_validate_json(raw)
                 except Exception:
-  
+
                     continue
                 lines.append(line)
         if meta is None:

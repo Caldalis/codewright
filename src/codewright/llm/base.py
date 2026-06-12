@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-if TYPE_CHECKING:  
+if TYPE_CHECKING:
     pass
 
 Role = Literal["system", "developer", "user", "assistant", "tool"]
@@ -54,7 +54,7 @@ StreamEventKind = Literal[
 
 @dataclass(frozen=True)
 class StreamEvent:
-  
+
     kind: StreamEventKind
     text: str | None = None
     tool_call: ToolCallBlock | None = None

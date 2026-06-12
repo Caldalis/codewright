@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from codewright.llm.base import CanonicalMessage
 
-if TYPE_CHECKING:  
+if TYPE_CHECKING:
     from codewright.agent.turn_context import TurnContext
 
 
