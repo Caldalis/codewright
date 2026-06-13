@@ -12,6 +12,12 @@ def action_signature(action: PendingAction) -> str:
 
     details = action.details or {}
     if action.kind == "exec":
+        if details.get("flagged"):
+            return f"exec:{action.summary}"
+        segments = details.get("segments")
+        if isinstance(segments, list) and segments:
+            heads = ",".join(sorted({str(s) for s in segments}))
+            return f"exec:{heads}"
         command = details.get("command")
         if isinstance(command, list) and command:
             head = str(command[0])
@@ -55,6 +61,9 @@ def assess_action(
         return "auto_allow"
 
     if action.kind == "exec":
+        # Segment analysis
+        if action.details.get("flagged"):
+            return "ask"
         target_cwd = action.details.get("cwd")
         try:
             resolved = Path(target_cwd).resolve() if target_cwd else cwd
@@ -62,6 +71,9 @@ def assess_action(
             return "ask"
         if _is_within(resolved, workspace_root):
             return "auto_allow"
+        # Outside the workspace always asks, even for read-only commands: the
+        # workspace root is a hard boundary (system.md), and a persistent shell
+        # session can `cd` out of it.
         return "ask"
 
     return "ask"

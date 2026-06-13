@@ -321,6 +321,16 @@ class Session:
             except Exception:
                 pass
 
+        if self._agent_path.is_root():
+            for handler in self._tool_registry.handlers():
+                aclose = getattr(handler, "aclose", None)
+                if aclose is None:
+                    continue
+                try:
+                    await aclose()
+                except Exception:
+                    pass
+
 
         if self._mcp is not None:
             try:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import locale
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,19 +22,40 @@ from codewright.tools.result import ToolResult
 from codewright.tools.spec import ParameterModel, ToolSpec
 from codewright.tools.truncate import truncate_middle
 
-_DEFAULT_TIMEOUT_MS = 30_000
+_DEFAULT_TIMEOUT_MS = 120_000  # 2 min: reads/searches finish fast; covers most builds/tests
 _OUTPUT_CAP_BYTES = 100 * 1024  # 100 KB total
 _DRAIN_GRACE_SECONDS = 2.0
 _IS_WINDOWS = sys.platform == "win32"
 
 
 class RunShellParams(ParameterModel):
-    command: list[str] = Field(..., description="argv list to spawn (not parsed by a shell)")
+    command: list[str] = Field(
+        ...,
+        description=(
+            "argv list to spawn. With shell=false (default) it is NOT parsed by a "
+            "shell; the first element is resolved on PATH honoring PATHEXT, so "
+            "Windows shims like 'npm'/'npx'/'tsc' (which are .cmd files) work. "
+            "With shell=true the elements are joined into one line and run through "
+            "the platform shell, enabling pipes, redirects, and globs."
+        ),
+    )
     cwd: str | None = Field(
         None, description="working directory (relative paths resolve against workspace root)"
     )
     timeout_ms: int = Field(
-        _DEFAULT_TIMEOUT_MS, ge=1, description="hard timeout before the child tree is killed"
+        _DEFAULT_TIMEOUT_MS,
+        ge=1,
+        description=(
+            "hard timeout (ms) before the child tree is killed. Default is 2 min; "
+            "raise it (e.g. 300000+) for long builds / installs / full test suites."
+        ),
+    )
+    shell: bool = Field(
+        False,
+        description=(
+            "run the command through the platform shell (bash -lc on POSIX, "
+            "cmd /c on Windows) so pipes / redirects / globs are interpreted"
+        ),
     )
 
 
@@ -45,9 +68,13 @@ class RunShellHandler(ToolHandler):
         return ToolSpec(
             name=self.tool_name,
             description=(
-                "Spawn an external command as a child process. argv is passed "
-                "directly to the OS — no shell expansion. Use this tool for "
-                "build / test / file inspection. To edit files, use apply_patch."
+                "Spawn a command as a child process. By default `command` is an "
+                "argv list with no shell parsing; on Windows a bare name is "
+                "resolved on PATH honoring PATHEXT, so .cmd shims (npm / npx / "
+                "tsc) work. Set `shell=true` to run through the platform shell "
+                "(bash -lc on POSIX, cmd /c on Windows) when you need pipes, "
+                "redirects, or globs. Use this tool for build / test / file "
+                "inspection. To edit files, use apply_patch."
             ),
             parameters=RunShellParams.to_json_schema(),
             supports_parallel=False,
@@ -107,7 +134,7 @@ class RunShellHandler(ToolHandler):
     ) -> ToolResult:
         start = time.monotonic()
         try:
-            proc, pgid = await _spawn(params.command, cwd)
+            proc, pgid = await _spawn(params.command, cwd, params.shell)
         except OSError as exc:
             wall_time = time.monotonic() - start
             command_text = " ".join(shlex.quote(c) for c in params.command)
@@ -189,8 +216,7 @@ class RunShellHandler(ToolHandler):
                 task.cancel()
 
         wall_time = time.monotonic() - start
-        combined = b"".join(stdout_buf) + b"".join(stderr_buf)
-        text = combined.decode("utf-8", errors="replace")
+        text = _decode_output(b"".join(stdout_buf)) + _decode_output(b"".join(stderr_buf))
         if cap_state["capped"]:
             text += "\n[output capped at 100 KB]"
         text = truncate_middle(text)
@@ -211,6 +237,8 @@ class RunShellHandler(ToolHandler):
         if timed_out:
             body = (
                 f"Timed out after {params.timeout_ms} ms\n"
+                "Hint: if this is a legitimately long command (build / install / "
+                "test suite), retry with a larger timeout_ms.\n"
                 f"Command: {' '.join(shlex.quote(c) for c in params.command)}\n"
                 f"Output:\n{text}"
             )
@@ -247,8 +275,47 @@ def _coerce_params(arguments: dict) -> RunShellParams:
         raise RespondToModelError(f"run_shell: invalid arguments: {exc}") from exc
 
 
-async def _spawn(command: list[str], cwd: Path) -> tuple[asyncio.subprocess.Process, int | None]:
+def _build_argv(command: list[str], shell: bool) -> list[str]:
+
+    if shell:
+        script = " ".join(command)
+        if _IS_WINDOWS:
+            return ["cmd", "/c", script]
+        return ["bash", "-lc", script]
+    if _IS_WINDOWS:
+        return _resolve_windows_argv(list(command))
+    return list(command)
+
+
+def _resolve_windows_argv(argv: list[str]) -> list[str]:
+    name = argv[0]
+
+    if os.sep in name or (os.altsep and os.altsep in name):
+        return argv
+    resolved = shutil.which(name)
+    if resolved is None:
+
+        return argv
+    argv[0] = resolved
+    return argv
+
+
+def _decode_output(data: bytes) -> str:
+
+    if not _IS_WINDOWS or not data:
+        return data.decode("utf-8", errors="replace")
+    text = data.decode("utf-8", errors="replace")
+    if text.count("�") <= max(1, len(text) // 100):
+        return text
+    enc = locale.getpreferredencoding(False) or "utf-8"
+    return data.decode(enc, errors="replace")
+
+
+async def _spawn(
+    command: list[str], cwd: Path, shell: bool
+) -> tuple[asyncio.subprocess.Process, int | None]:
     """Spawn ``command`` with stdin DEVNULL and an isolated process group."""
+    argv = _build_argv(command, shell)
     kwargs: dict = {
         "cwd": str(cwd),
         "stdin": subprocess.DEVNULL,
@@ -259,11 +326,11 @@ async def _spawn(command: list[str], cwd: Path) -> tuple[asyncio.subprocess.Proc
         kwargs["creationflags"] = (
             subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
         )
-        proc = await asyncio.create_subprocess_exec(*command, **kwargs)
+        proc = await asyncio.create_subprocess_exec(*argv, **kwargs)
         return proc, None
 
     kwargs["preexec_fn"] = os.setsid
-    proc = await asyncio.create_subprocess_exec(*command, **kwargs)
+    proc = await asyncio.create_subprocess_exec(*argv, **kwargs)
     return proc, proc.pid
 
 

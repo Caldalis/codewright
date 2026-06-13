@@ -44,5 +44,8 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._handlers.keys())
 
+    def handlers(self) -> list[ToolHandler]:
+        return list(self._handlers.values())
+
     def specs(self) -> list[ToolSpec]:
         return [h.spec() for h in self._handlers.values()]

@@ -32,6 +32,7 @@ class CodewrightConfig:
     compact_threshold: float = DEFAULT_COMPACT_THRESHOLD
     default_role: str = DEFAULT_ROLE
     permission_profile: PermissionProfile = DEFAULT_PERMISSION_PROFILE
+    shell_path: str | None = None
     mcp_servers: list[McpServerConfig] = field(default_factory=list)
 
 
@@ -92,6 +93,7 @@ def load_config(overrides: CliOverrides | None = None) -> CodewrightConfig:
                 file_cfg.permission_profile,
             )
         ),
+        shell_path=_pick(env_cfg.get("shell_path"), file_cfg.shell_path),
         mcp_servers=file_cfg.mcp_servers,
     )
 
@@ -128,6 +130,7 @@ def _config_from_toml(data: dict[str, Any]) -> CodewrightConfig:
         permission_profile=_coerce_permission_profile(
             workspace.get("permission_profile", DEFAULT_PERMISSION_PROFILE)
         ),
+        shell_path=_optional_str(_table(data, "shell").get("path")),
         mcp_servers=parse_mcp_servers(data),
     )
 
@@ -156,6 +159,7 @@ def _env_overrides(file_cfg: CodewrightConfig) -> dict[str, Any]:
             "compact_threshold": _env_str("CODEWRIGHT_COMPACT_THRESHOLD"),
             "default_role": _env_str("CODEWRIGHT_DEFAULT_ROLE"),
             "permission_profile": _env_str("CODEWRIGHT_PERMISSION_PROFILE"),
+            "shell_path": _env_str("CODEWRIGHT_SHELL_PATH"),
         }
     )
 

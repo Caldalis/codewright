@@ -10,6 +10,8 @@ from codewright.tools.result import ToolResult
 from codewright.tools.spec import ParameterModel, ToolSpec
 
 
+_DEFAULT_WAIT_TIMEOUT_MS = 300_000
+
 class WaitAgentParams(ParameterModel):
     targets: list[str] = Field(
         ...,
@@ -22,12 +24,12 @@ class WaitAgentParams(ParameterModel):
     timeout_ms: int | None = Field(
         None,
         description=(
-            "Optional timeout in milliseconds. If the timeout elapses the "
-            "tool returns whatever agents are terminal at that moment, "
-            "which may be empty."
+            "Optional timeout in milliseconds. If omitted, a default cap is "
+            "applied so the wait can never block forever. When the timeout "
+            "elapses the tool returns whatever agents are terminal at that "
+            "moment, which may be empty."
         ),
     )
-
 
 class WaitAgentHandler(ToolHandler):
     @property
@@ -65,10 +67,20 @@ class WaitAgentHandler(ToolHandler):
                     f"wait_agent: invalid target {s!r}: {exc}"
                 ) from exc
         control = invocation.session.agent_control
+        self_path = str(invocation.session.agent_path)
         for p in paths:
+            if str(p) == self_path:
+                raise RespondToModelError(
+                    f"wait_agent: cannot wait on yourself ({p})"
+                )
             if not control.has(p):
                 raise RespondToModelError(f"wait_agent: no live agent at {p}")
-        terminal = await control.wait_agent(paths, params.timeout_ms)
+        timeout_ms = (
+            params.timeout_ms
+            if params.timeout_ms is not None
+            else _DEFAULT_WAIT_TIMEOUT_MS
+        )
+        terminal = await control.wait_agent(paths, timeout_ms)
         if not terminal:
             return ToolResult(
                 success=True,

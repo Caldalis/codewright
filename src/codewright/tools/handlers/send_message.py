@@ -60,6 +60,12 @@ class SendMessageHandler(ToolHandler):
             raise RespondToModelError(
                 f"send_message: no live agent at {target_path}"
             )
+        if control.get_info(target_path).status == "closed":
+            # The recipient's loop has stopped; the message would never be read.
+            raise RespondToModelError(
+                f"send_message: agent {target_path} is closed; its inbox is no "
+                "longer read"
+            )
         await control.send_message(
             target_path, params.content, author=invocation.session.agent_path
         )

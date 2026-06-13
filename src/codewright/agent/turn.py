@@ -196,20 +196,19 @@ async def run_turn(
 
         invocations = []
         for call in tool_calls:
-            await session.emit_event(
-                EvToolCallStarted(
-                    call_id=call.call_id,
-                    tool_name=call.tool_name,
-                    arguments={},
-                ),
-                sub_id,
-            )
             try:
-                invocations.append(
-                    session.tool_router.build_invocation(call, session, turn_context)
+                inv = session.tool_router.build_invocation(
+                    call, session, turn_context
                 )
             except RespondToModelError as exc:
-
+                await session.emit_event(
+                    EvToolCallStarted(
+                        call_id=call.call_id,
+                        tool_name=call.tool_name,
+                        arguments={},
+                    ),
+                    sub_id,
+                )
                 _append_tool_failure(session, call, str(exc))
                 await session.emit_event(
                     EvToolCallCompleted(
@@ -217,6 +216,16 @@ async def run_turn(
                     ),
                     sub_id,
                 )
+                continue
+            await session.emit_event(
+                EvToolCallStarted(
+                    call_id=call.call_id,
+                    tool_name=call.tool_name,
+                    arguments=inv.arguments,
+                ),
+                sub_id,
+            )
+            invocations.append(inv)
 
         if invocations:
             try:

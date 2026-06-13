@@ -23,6 +23,7 @@ from codewright.protocol import (
     EvShutdownComplete,
     EvTurnAborted,
     EvTurnCompleted,
+    EvWarning,
     OpUserTurn,
     PermissionProfile,
     UserInputText,
@@ -30,10 +31,17 @@ from codewright.protocol import (
 from codewright.tools.handlers import (
     ApplyPatchHandler,
     CloseAgentHandler,
+    FindFilesHandler,
     FollowupTaskHandler,
     ListAgentsHandler,
-    RunShellHandler,
+    ListDirHandler,
+    ReadFileHandler,
+    SearchTextHandler,
     SendMessageHandler,
+    ShellHandler,
+    ShellKillHandler,
+    ShellManager,
+    ShellOutputHandler,
     SpawnAgentHandler,
     UpdatePlanHandler,
     WaitAgentHandler,
@@ -232,7 +240,7 @@ async def _resume_session_from_config(
         role=config.default_role,
         mcp_configs=config.mcp_servers,
     )
-    _register_builtin_tools(session)
+    await _register_builtin_tools(session, shell_path=config.shell_path)
     return session
 
 
@@ -270,16 +278,40 @@ async def _bootstrap_session(
         rollout=rollout,
         role=config.default_role,
     )
-    _register_builtin_tools(session)
+    await _register_builtin_tools(session, shell_path=config.shell_path)
     await session.start_mcp(config.mcp_servers)
     return session
 
 
-def _register_builtin_tools(session: Session) -> None:
+async def _register_builtin_tools(
+    session: Session, shell_path: str | None = None
+) -> None:
     reg = session.tool_registry
 
-    if not reg.has("run_shell"):
-        reg.register(RunShellHandler())
+    for handler in (
+        ReadFileHandler(),
+        ListDirHandler(),
+        FindFilesHandler(),
+        SearchTextHandler(),
+    ):
+        if not reg.has(handler.tool_name):
+            reg.register(handler)
+    if not reg.has("shell"):
+        shell_manager = ShellManager(shell_path=shell_path)
+        reg.register(ShellHandler(shell_manager))
+        reg.register(ShellOutputHandler(shell_manager))
+        reg.register(ShellKillHandler(shell_manager))
+        if not shell_manager.dialect.persistent:
+            await session.emit_event(
+                EvWarning(
+                    message=(
+                        "shell tool degraded to cmd.exe (bash not found): session "
+                        "state (cd/export) will NOT persist and command safety "
+                        "checks are limited. Install Git Bash or set "
+                        "CODEWRIGHT_SHELL_PATH to a bash executable."
+                    )
+                )
+            )
     if not reg.has("apply_patch"):
         reg.register(ApplyPatchHandler())
     if not reg.has("update_plan"):

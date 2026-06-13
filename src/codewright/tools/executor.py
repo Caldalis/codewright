@@ -24,7 +24,11 @@ class ToolExecutor:
         if not invocations:
             return []
         tasks = [asyncio.create_task(self._dispatch_one(inv)) for inv in invocations]
-        return await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return list(results)
 
     async def _dispatch_one(self, inv: ToolInvocation) -> ToolResult:
         try:
@@ -40,4 +44,17 @@ class ToolExecutor:
                 return await handler.handle(inv)
             except RespondToModelError as exc:
                 return ToolResult(success=False, body=str(exc))
+            except FatalToolError:
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+
+                return ToolResult(
+                    success=False,
+                    body=(
+                        f"{inv.tool_name} failed unexpectedly: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                )
 

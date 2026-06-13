@@ -627,12 +627,12 @@ class TuiApp:
             self._delta_buf = ""
             self._append_history(self._block("assistant", msg.content))
         elif isinstance(msg, EvToolCallStarted):
-            self._append_history(
-                self._block(
-                    "tool",
-                    f"{msg.tool_name} started (call_id={msg.call_id})",
+            detail = f"{msg.tool_name} started (call_id={msg.call_id})"
+            if msg.arguments:
+                detail += " " + self._single_line(
+                    self._format_tool_args(msg.arguments), max_chars=200
                 )
-            )
+            self._append_history(self._block("tool", detail))
         elif isinstance(msg, EvToolCallCompleted):
             tag = "ok" if msg.success else "fail"
             preview = self._single_line(msg.body, max_chars=240)
@@ -800,6 +800,12 @@ class TuiApp:
         if len(line) <= max_chars:
             return line
         return line[: max(0, max_chars - 3)] + "..."
+
+    @staticmethod
+    def _format_tool_args(arguments: dict[str, Any]) -> str:
+        # Compact key=value for the start line; _single_line flattens newlines
+        # and caps total length so a large patch/command can't flood the view.
+        return ", ".join(f"{k}={v}" for k, v in arguments.items())
 
     @staticmethod
     def _compact_path(path: str, *, max_chars: int) -> str:

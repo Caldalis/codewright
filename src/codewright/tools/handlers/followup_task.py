@@ -61,6 +61,13 @@ class FollowupTaskHandler(ToolHandler):
             raise RespondToModelError(
                 f"followup_task: no live agent at {target_path}"
             )
+        if control.get_info(target_path).status == "closed":
+            # A closed agent's submission loop has stopped; a new turn would
+            # never run (and would silently flip its status back to running).
+            raise RespondToModelError(
+                f"followup_task: agent {target_path} is closed; spawn a new "
+                "agent instead"
+            )
         await control.followup_task(
             target_path, params.content, author=invocation.session.agent_path
         )
