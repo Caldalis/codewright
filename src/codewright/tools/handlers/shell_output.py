@@ -17,6 +17,7 @@ from codewright.tools.result import ToolResult
 from codewright.tools.spec import ParameterModel, ToolSpec
 from codewright.tools.truncate import truncate_middle
 
+
 class ShellOutputParams(ParameterModel):
     job_id: str = Field(..., min_length=1, description="Job id returned by `shell`.")
     cursor: int = Field(

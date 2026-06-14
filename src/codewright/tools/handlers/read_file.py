@@ -22,6 +22,7 @@ from codewright.tools.invocation import ToolInvocation
 from codewright.tools.result import ToolResult
 from codewright.tools.spec import ParameterModel, ToolSpec
 
+
 class ReadFileParams(ParameterModel):
     path: str = Field(..., min_length=1, description="Workspace-relative file path to read.")
     offset: int = Field(

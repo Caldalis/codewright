@@ -10,6 +10,7 @@ from codewright.tools.invocation import ToolInvocation
 from codewright.tools.result import ToolResult
 from codewright.tools.spec import ParameterModel, ToolSpec
 
+
 class ShellKillParams(ParameterModel):
     target: str = Field(
         ...,

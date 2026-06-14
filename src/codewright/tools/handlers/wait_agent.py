@@ -9,7 +9,6 @@ from codewright.tools.invocation import ToolInvocation
 from codewright.tools.result import ToolResult
 from codewright.tools.spec import ParameterModel, ToolSpec
 
-
 _DEFAULT_WAIT_TIMEOUT_MS = 300_000
 
 class WaitAgentParams(ParameterModel):
