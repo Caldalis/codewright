@@ -35,6 +35,8 @@ from codewright.tools.spec import ToolSpec
 
 if TYPE_CHECKING:  # pragma: no cover
     from codewright.agent.control import AgentControl
+    from codewright.agent.distill import DistillationCoordinator
+    from codewright.agent.skills import SkillRegistry
     from codewright.context.manager import ContextManager
     from codewright.context.summarizer import Summarizer
     from codewright.llm.base import LLMProvider
@@ -69,6 +71,7 @@ class Session:
         agent_path: AgentPath | None = None,
         agent_control: AgentControl | None = None,
         role: str = "default",
+        extra_test_commands: list[str] | None = None,
     ) -> None:
         from codewright.agent.submission_loop import submission_loop
 
@@ -99,6 +102,9 @@ class Session:
         self._agent_path: AgentPath = agent_path or AgentPath.root()
         self._agent_control: AgentControl | None = agent_control
         self.role: str = role
+        self._skill_registry: SkillRegistry | None = None
+        self._extra_test_commands: tuple[str, ...] = tuple(extra_test_commands or ())
+        self._distillation: DistillationCoordinator | None = None
 
         self._tx_sub: asyncio.Queue[Submission] = asyncio.Queue(maxsize=queue_maxsize)
         self._tx_event: asyncio.Queue[Event] = asyncio.Queue()
@@ -269,6 +275,26 @@ class Session:
         return self._tool_registry
 
     @property
+    def skill_registry(self) -> SkillRegistry:
+        if self._skill_registry is None:
+            from codewright.agent.skills import load_skills
+
+            self._skill_registry = load_skills(self.cwd)
+        return self._skill_registry
+
+    @property
+    def distillation(self) -> DistillationCoordinator | None:
+        if not self._agent_path.is_root() or self._workspace is None:
+            return None
+        if self._distillation is None:
+            from codewright.agent.distill import DistillationCoordinator
+
+            self._distillation = DistillationCoordinator(
+                self.cwd, extra_test_commands=self._extra_test_commands
+            )
+        return self._distillation
+
+    @property
     def tool_router(self) -> ToolRouter:
         return self._tool_router
 
@@ -330,6 +356,12 @@ class Session:
                     await aclose()
                 except Exception:
                     pass
+
+        if self._distillation is not None:
+            try:
+                await self._distillation.aclose()
+            except Exception:
+                pass
 
 
         if self._mcp is not None:

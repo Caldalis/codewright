@@ -27,7 +27,16 @@ def _read_role_snippet(role: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _render_developer_layer(turn_context: TurnContext, agents_md: str | None) -> str:
+def load_role_text(role: str) -> str:
+    """Public reader for a role's markdown snippet (e.g. the distiller prompt)."""
+    return _read_role_snippet(role)
+
+
+def _render_developer_layer(
+    turn_context: TurnContext,
+    agents_md: str | None,
+    learned_facts: str | None = None,
+) -> str:
     parts: list[str] = []
     parts.append(
         "<turn_settings>\n"
@@ -45,6 +54,9 @@ def _render_developer_layer(turn_context: TurnContext, agents_md: str | None) ->
 
     if agents_md and agents_md.strip():
         parts.append(f"<user_instructions>\n{agents_md.strip()}\n</user_instructions>")
+
+    if learned_facts and learned_facts.strip():
+        parts.append(f"<learned_facts>\n{learned_facts.strip()}\n</learned_facts>")
 
     return "\n\n".join(parts)
 
@@ -74,12 +86,13 @@ class PromptBuilder:
         user_input: str,
         *,
         agents_md: str | None = None,
+        learned_facts: str | None = None,
     ) -> list[CanonicalMessage]:
         messages: list[CanonicalMessage] = [
             CanonicalMessage(role="system", content=self._system_template),
             CanonicalMessage(
                 role="developer",
-                content=_render_developer_layer(turn_context, agents_md),
+                content=_render_developer_layer(turn_context, agents_md, learned_facts),
             ),
         ]
         messages.extend(history)

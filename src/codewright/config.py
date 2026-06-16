@@ -34,6 +34,7 @@ class CodewrightConfig:
     permission_profile: PermissionProfile = DEFAULT_PERMISSION_PROFILE
     shell_path: str | None = None
     mcp_servers: list[McpServerConfig] = field(default_factory=list)
+    test_commands: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,7 @@ def load_config(overrides: CliOverrides | None = None) -> CodewrightConfig:
         ),
         shell_path=_pick(env_cfg.get("shell_path"), file_cfg.shell_path),
         mcp_servers=file_cfg.mcp_servers,
+        test_commands=file_cfg.test_commands,
     )
 
 def _read_config_file(path: Path) -> dict[str, Any]:
@@ -132,6 +134,7 @@ def _config_from_toml(data: dict[str, Any]) -> CodewrightConfig:
         ),
         shell_path=_optional_str(_table(data, "shell").get("path")),
         mcp_servers=parse_mcp_servers(data),
+        test_commands=_coerce_str_list(_table(data, "skills").get("test_commands")),
     )
 
 def _env_overrides(file_cfg: CodewrightConfig) -> dict[str, Any]:
@@ -225,6 +228,10 @@ def _coerce_threshold(value: Any) -> float:
     if not (0.0 < out <= 1.0):
         raise ValueError("compact_threshold must be in (0, 1]")
     return out
+def _coerce_str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if str(v).strip()]
 
 
 

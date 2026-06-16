@@ -39,6 +39,21 @@ that were not advertised.
   with `shell_output(job_id, cursor)`.
 - Always pass absolute paths to tools when the cwd is ambiguous.
 
+# Skills
+
+You may have access to *skills* — project-specific instructions and workflows
+stored under `./skills` in this workspace. The `skill` tool lists a menu of
+available skills (each a `name` and a one-line description). When a task matches
+a skill, call `skill` with its `name` to read the full instructions into
+context, then follow them. Loading a skill you do not need costs nothing; only
+pull in what is relevant to the current task.
+
+Skills marked `[未验证]` (provisional) were auto-learned from an earlier task and
+have NOT yet been confirmed by successful re-use. Treat them as hints that may be
+wrong — prefer verifying their advice (for example, by running the project's
+tests) before relying on it. Skills are guidance only: they never grant
+permission to run a command that would otherwise require approval.
+
 # Style
 
 - Default to ASCII characters. Use Unicode only when the file already does or

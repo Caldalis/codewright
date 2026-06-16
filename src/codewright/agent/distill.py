@@ -12,6 +12,7 @@ from codewright.agent.skills import SkillRegistry
 from codewright.llm.base import CanonicalMessage
 from codewright.prompts.builder import load_role_text
 from codewright.protocol import EvWarning
+from codewright.tools.truncate import truncate_middle
 
 if TYPE_CHECKING:
     from codewright.agent.turn_context import TurnContext
@@ -74,12 +75,17 @@ def anti_cheat_ok(red_output: str, green_output: str, edited_test_files: bool) -
     return not edited_test_files
 
 def parse_candidates(text: str) -> list[dict[str, str]]:
+    return _parse_envelope(text) or []
+
+
+def _parse_envelope(text: str) -> list[dict[str, str]] | None:
     obj = _loads_lenient(text)
-    if not isinstance(obj, dict):
-        return []
-    raw = obj.get("candidates")
-    if not isinstance(raw, list):
-        return []
+    if not isinstance(obj, dict) or not isinstance(obj.get("candidates"), list):
+        return None
+    return _coerce_candidates(obj["candidates"])
+
+
+def _coerce_candidates(raw: list[Any]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for c in raw:
         if not isinstance(c, dict) or not c.get("name") or not c.get("body"):
@@ -247,6 +253,14 @@ class VerificationTracker:
             return _Transition(command, "green_red", prev[1], output)
         return None
 
+_TASK_STORE_CAP = 2000
+_EDIT_STORE_CAP = 4096
+_MAX_TASK_EVENTS = 50
+_EVENT_BYTE_BUDGET = 128 * 1024
+_SLICE_EDITS_BUDGET = 12000
+_SLICE_SHELLS = 8
+
+
 @dataclass
 class _Event:
     kind: str  # "task" | "edit" | "shell"
@@ -264,7 +278,7 @@ class DistillationCoordinator:
         self._tasks: set[asyncio.Task[None]] = set()
     def note_user(self, text: str) -> None:
         if text and text.strip():
-            self._events.append(_Event("task", text.strip()))
+            self._remember("task", text.strip())
 
     def note_retrieval(self, name: str) -> None:
         self._retrieved.add(name)
@@ -273,8 +287,8 @@ class DistillationCoordinator:
         if tool_name == "apply_patch" and getattr(result, "success", False):
             patch = _patch_text(arguments)
             if patch:
-                self._events.append(_Event("edit", patch))
-                if _touches_test_files(patch):
+                self._remember("edit", patch)
+                if _touches_test_files(patch):  # uses the full patch, not the stored copy
                     self._edited_test_files = True
         elif tool_name == "shell":
             command = str((arguments or {}).get("command", "")).strip()
@@ -283,9 +297,7 @@ class DistillationCoordinator:
             data = getattr(result, "structured_data", None) or {}
             exit_code = data.get("exit_code")
             body = getattr(result, "body", "") or ""
-            self._events.append(
-                _Event("shell", f"$ {command}\nexit={exit_code}\n{_short(body, 1500)}")
-            )
+            self._remember("shell", f"$ {command}  (exit {exit_code})")
             transition = self._tracker.observe(command, exit_code, body)
             if transition is None:
                 return
@@ -293,6 +305,32 @@ class DistillationCoordinator:
                 self._pending.append(transition)
             elif transition.kind == "green_red":
                 self._failure_pending = True
+
+    def _remember(self, kind: str, text: str) -> None:
+        if kind == "task":
+            text = _short(text, _TASK_STORE_CAP)
+        elif kind == "edit":
+            text = _short(text, _EDIT_STORE_CAP)  # one huge patch can't dominate memory
+        self._events.append(_Event(kind, text))
+        self._trim()
+
+    def _trim(self) -> None:
+        events = self._events
+        keep = [False] * len(events)
+        task_idx = [i for i, e in enumerate(events) if e.kind == "task"]
+        for i in task_idx[-_MAX_TASK_EVENTS:]:
+            keep[i] = True
+        used, kept_nontask = 0, False
+        for i in range(len(events) - 1, -1, -1):  # newest -> oldest
+            if events[i].kind == "task":
+                continue
+            cost = len(events[i].text)
+            if kept_nontask and used + cost > _EVENT_BYTE_BUDGET:
+                continue  # drop older edit/shell once over budget
+            keep[i] = True
+            used += cost
+            kept_nontask = True  # always keep at least the newest non-task event
+        self._events = [e for i, e in enumerate(events) if keep[i]]
 
     async def on_batch_end(self, session: Any, turn_context: TurnContext) -> None:
         registry: SkillRegistry = session.skill_registry
@@ -368,17 +406,21 @@ class DistillationCoordinator:
     def _render_slice(self, transition: _Transition) -> str:
         tasks = [e.text for e in self._events if e.kind == "task"]
         edits = [e.text for e in self._events if e.kind == "edit"]
+        shells = [e.text for e in self._events if e.kind == "shell"]
         parts: list[str] = []
         if tasks:
-            parts.append("## Task\n" + "\n\n".join(_short(t, 1000) for t in tasks))
+            parts.append("## Task\n" + "\n\n".join(tasks))
         if edits:
-            joined = "\n\n".join(_short(e, 4000) for e in edits)
-            parts.append("## Code changes during this episode\n" + _short(joined, 12000))
+            chosen = _take_recent(edits, _SLICE_EDITS_BUDGET, per_item=4000)
+            parts.append("## Code changes this episode (most recent)\n" + "\n\n".join(chosen))
+        if shells:
+            parts.append("## Recent commands\n" + "\n".join(shells[-_SLICE_SHELLS:]))
         parts.append(
             "## Verification (objective success signal)\n"
             f"Test command: {transition.command}\n\n"
-            f"BEFORE (failing):\n{_short(transition.prev_output, 2000)}\n\n"
-            f"AFTER (passing):\n{_short(transition.cur_output, 2000)}"
+
+            f"BEFORE (failing):\n{truncate_middle(transition.prev_output, 3000)}\n\n"
+            f"AFTER (passing):\n{_short(transition.cur_output, 1500)}"
         )
         return "\n\n".join(parts)
 
@@ -417,12 +459,17 @@ async def _distill_candidates(
         f"## Existing skills (do not duplicate these)\n{menu}\n\n"
         "Now output the JSON object of candidates."
     )
-    messages = [
-        CanonicalMessage(role="system", content=system),
-        CanonicalMessage(role="user", content=user),
-    ]
-    text = await _collect_stream_text(llm, messages, turn_context)
-    return parse_candidates(text)
+    for attempt in range(_DISTILL_MAX_ATTEMPTS):
+        content = user if attempt == 0 else user + _RETRY_CORRECTION
+        messages = [
+            CanonicalMessage(role="system", content=system),
+            CanonicalMessage(role="user", content=content),
+        ]
+        text = await _collect_stream_text(llm, messages, turn_context)
+        parsed = _parse_envelope(text)
+        if parsed is not None:
+            return parsed
+    return []  # never produced a parseable envelope after retries
 
 async def _collect_stream_text(llm: Any, messages: list[CanonicalMessage], turn_context: TurnContext) -> str:
     result = llm.stream(messages, [], turn_context)
@@ -465,6 +512,19 @@ def _short(text: str, limit: int) -> str:
     keep = max(0, limit - 24)
     return text[:keep] + f"\n…[{len(text) - keep} chars truncated]"
 
+def _take_recent(items: list[str], budget: int, per_item: int) -> list[str]:
+
+    chosen: list[str] = []
+    used = 0
+    for text in reversed(items):
+        piece = _short(text, per_item)
+        if chosen and used + len(piece) > budget:
+            break
+        chosen.append(piece)
+        used += len(piece)
+    chosen.reverse()
+    return chosen
+
 def _age_seconds(last_retrieved_ts: Any, path: Path, now: float) -> float | None:
     try:
         if last_retrieved_ts is not None:
@@ -472,6 +532,15 @@ def _age_seconds(last_retrieved_ts: Any, path: Path, now: float) -> float | None
         return now - path.stat().st_mtime
     except (OSError, TypeError, ValueError):
         return None
+
+_DISTILL_MAX_ATTEMPTS = 3
+
+_RETRY_CORRECTION = (
+    "\n\nYour previous reply could not be parsed. Reply with ONLY a single JSON "
+    'object of the form {"candidates": [...]} and nothing else. If there is '
+    'nothing worth saving, reply with exactly {"candidates": []}.'
+)
+
 
 _DEFAULT_DISTILLER_PROMPT = (
     "You are the Codewright skill distiller. Review the episode and output a "
@@ -494,4 +563,3 @@ __all__ = [
     "set_skill_status",
     "write_provisional_skill",
 ]
-

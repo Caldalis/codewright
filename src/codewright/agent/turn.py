@@ -52,6 +52,10 @@ async def run_turn(
         pending_user_input = user_input
     last_message_text: str | None = None
     agents_md = _maybe_agents_md(session, turn_context)
+    learned_facts = _maybe_learned_facts(session)
+    distill = session.distillation
+    if distill is not None and pending_user_input:
+        distill.note_user(pending_user_input)
     compacted_this_turn = False
 
     while True:
@@ -85,6 +89,7 @@ async def run_turn(
             session.context.snapshot(),
             pending_user_input,
             agents_md=agents_md,
+            learned_facts=learned_facts,
         )
 
         if pending_user_input:
@@ -249,6 +254,8 @@ async def run_turn(
                 return None
 
             for inv, result in zip(invocations, results, strict=True):
+                if distill is not None:
+                    distill.note_tool(inv.tool_name, inv.arguments, result)
                 session.context.append(
                     CanonicalMessage(
                         role="tool",
@@ -277,6 +284,9 @@ async def run_turn(
                     sub_id,
                 )
 
+            if distill is not None:
+                await distill.on_batch_end(session, turn_context)
+
 
 
 def _flatten_content(msg: CanonicalMessage) -> str:
@@ -289,6 +299,13 @@ def _maybe_agents_md(session: Session, turn_context: TurnContext) -> str | None:
     try:
         return session.workspace.resolve_agents_md(turn_context.cwd)
     except RuntimeError:
+        return None
+
+
+def _maybe_learned_facts(session: Session) -> str | None:
+    try:
+        return session.skill_registry.always_on_text()
+    except Exception:
         return None
 
 

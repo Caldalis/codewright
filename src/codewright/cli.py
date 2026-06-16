@@ -42,6 +42,7 @@ from codewright.tools.handlers import (
     ShellKillHandler,
     ShellManager,
     ShellOutputHandler,
+    SkillHandler,
     SpawnAgentHandler,
     UpdatePlanHandler,
     WaitAgentHandler,
@@ -277,6 +278,7 @@ async def _bootstrap_session(
         workspace=wm,
         rollout=rollout,
         role=config.default_role,
+        extra_test_commands=config.test_commands,
     )
     await _register_builtin_tools(session, shell_path=config.shell_path)
     await session.start_mcp(config.mcp_servers)
@@ -316,6 +318,8 @@ async def _register_builtin_tools(
         reg.register(ApplyPatchHandler())
     if not reg.has("update_plan"):
         reg.register(UpdatePlanHandler())
+    if not reg.has("skill"):
+        reg.register(SkillHandler(session.skill_registry))
     for handler in (
         SpawnAgentHandler(),
         SendMessageHandler(),

@@ -18,6 +18,7 @@ from codewright.tools.handlers.shell_output import (
     ShellOutputHandler,
     ShellOutputParams,
 )
+from codewright.tools.handlers.skill import SkillHandler, SkillParams
 from codewright.tools.handlers.spawn_agent import SpawnAgentHandler, SpawnAgentParams
 from codewright.tools.handlers.update_plan import UpdatePlanHandler, UpdatePlanParams
 from codewright.tools.handlers.wait_agent import WaitAgentHandler, WaitAgentParams
@@ -50,6 +51,8 @@ __all__ = [
     "ShellOutputHandler",
     "ShellOutputParams",
     "ShellParams",
+    "SkillHandler",
+    "SkillParams",
     "SpawnAgentHandler",
     "SpawnAgentParams",
     "UpdatePlanHandler",
