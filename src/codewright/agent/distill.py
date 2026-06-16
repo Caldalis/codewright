@@ -4,6 +4,8 @@ import asyncio
 import json
 import re
 import time
+from collections import OrderedDict
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -232,25 +234,32 @@ class _Transition:
     prev_output: str
     cur_output: str
 
+_TRACKER_OUTPUT_CAP = 4000
+_TRACKER_MAX_CMDS = 64
+
 class VerificationTracker:
     """Remembers each test command's last outcome and flags red->green flips."""
     def __init__(self, extra_commands: tuple[str, ...] = ()) -> None:
-        self._last: dict[str, tuple[bool, str]] = {}
+        self._last: OrderedDict[str, tuple[bool, str]] = OrderedDict()
         self._extra = tuple(extra_commands)
 
-    def observe(self, command: str, exit_code: int | None, output: str) -> _Transition | None:
+    def observe(self, command, exit_code, output):
         if exit_code is None or not is_test_command(command, self._extra):
             return None
         key = _norm_cmd(command)
         passed = exit_code == 0
+        stored = truncate_middle(output, _TRACKER_OUTPUT_CAP)
         prev = self._last.get(key)
-        self._last[key] = (passed, output)
+        self._last[key] = (passed, stored)
+        self._last.move_to_end(key)  # LRU
+        if len(self._last) > _TRACKER_MAX_CMDS:
+            self._last.popitem(last=False)
         if prev is None:
             return None
         if prev[0] is False and passed:
-            return _Transition(command, "red_green", prev[1], output)
+            return _Transition(command, "red_green", prev[1], stored)
         if prev[0] is True and not passed:
-            return _Transition(command, "green_red", prev[1], output)
+            return _Transition(command, "green_red", prev[1], stored)
         return None
 
 _TASK_STORE_CAP = 2000
@@ -332,7 +341,7 @@ class DistillationCoordinator:
             kept_nontask = True  # always keep at least the newest non-task event
         self._events = [e for i, e in enumerate(events) if keep[i]]
 
-    async def on_batch_end(self, session: Any, turn_context: TurnContext) -> None:
+    async def _on_batch_end(self, session: Any, turn_context: TurnContext) -> None:
         registry: SkillRegistry = session.skill_registry
         changed = False
         if self._pending:
@@ -345,6 +354,15 @@ class DistillationCoordinator:
             changed = True
         if changed:
             await self._apply_lifecycle(session, registry)
+
+    async def on_batch_end(self, session: Any, turn_context: TurnContext) -> None:
+        try:
+            await self._on_batch_end(session, turn_context)
+        except Exception as exc:
+            with suppress(Exception):
+                await session.emit_event(
+                    EvWarning(message=f"[skill] distillation step failed: {exc}")
+                )
 
     async def _handle_green(
         self, session: Any, turn_context: TurnContext, registry: SkillRegistry

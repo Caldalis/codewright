@@ -78,10 +78,13 @@ class SkillHandler(ToolHandler):
             )
 
         body = self._registry.load_body(skill)
-        self._registry.record_retrieval(skill.name)
-        distillation = getattr(invocation.session, "distillation", None)
-        if distillation is not None:
-            distillation.note_retrieval(skill.name)
+        try:
+            self._registry.record_retrieval(skill.name)
+            distillation = getattr(invocation.session, "distillation", None)
+            if distillation is not None:
+                distillation.note_retrieval(skill.name)
+        except Exception:
+            pass  # never fail a skill load over it
         if skill.status == "provisional":
             body += (
                 f"\n\n[note] This skill is {_PROVISIONAL_MARK} (provisional): "
