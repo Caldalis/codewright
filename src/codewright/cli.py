@@ -57,7 +57,7 @@ def _resolve_workspace(path_str: str) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="codewright")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd")
 
     p_run = sub.add_parser("run", help="non-interactive single user turn")
     p_run.add_argument("prompt")
@@ -110,7 +110,11 @@ def main() -> None:
         default=None,
     )
 
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    subcommands = {"run", "resume", "list-sessions", "tui"}
+    if not argv or (argv[0] not in subcommands and argv[0] not in ("-h", "--help")):
+        argv = ["tui", *argv]
+    args = parser.parse_args(argv)
     asyncio.run(_dispatch(args))
 
 
