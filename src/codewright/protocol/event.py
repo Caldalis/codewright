@@ -101,6 +101,18 @@ class EvTokenCount(_EventBase):
     total: int
 
 
+class EvCompactionStarted(_EventBase):
+    type: Literal["compaction_started"] = "compaction_started"
+    reason: Literal["auto", "manual"] = "auto"
+    tokens_before: int = 0
+
+
+class EvCompactionCompleted(_EventBase):
+    type: Literal["compaction_completed"] = "compaction_completed"
+    tokens_before: int = 0
+    tokens_after: int = 0
+
+
 class EvError(_EventBase):
     type: Literal["error"] = "error"
     message: str
@@ -125,7 +137,7 @@ class EvShutdownComplete(_EventBase):
 
 
 EventMsg = Annotated[
-    EvTurnStarted | EvTurnCompleted | EvTurnAborted | EvAgentMessage | EvAgentMessageDelta | EvAgentReasoning | EvToolCallStarted | EvToolCallCompleted | EvExecApprovalRequest | EvPatchApprovalRequest | EvPlanUpdate | EvTokenCount | EvError | EvWarning | EvSessionConfigured | EvShutdownComplete,
+    EvTurnStarted | EvTurnCompleted | EvTurnAborted | EvAgentMessage | EvAgentMessageDelta | EvAgentReasoning | EvToolCallStarted | EvToolCallCompleted | EvExecApprovalRequest | EvPatchApprovalRequest | EvPlanUpdate | EvTokenCount | EvCompactionStarted | EvCompactionCompleted | EvError | EvWarning | EvSessionConfigured | EvShutdownComplete,
     Field(discriminator="type"),
 ]
 

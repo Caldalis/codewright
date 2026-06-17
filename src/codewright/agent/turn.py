@@ -11,6 +11,8 @@ from codewright.persistence.rollout import RolloutLine
 from codewright.protocol import (
     EvAgentMessage,
     EvAgentMessageDelta,
+    EvCompactionCompleted,
+    EvCompactionStarted,
     EvError,
     EvTokenCount,
     EvToolCallCompleted,
@@ -18,7 +20,6 @@ from codewright.protocol import (
     EvTurnAborted,
     EvTurnCompleted,
     EvTurnStarted,
-    EvWarning,
 )
 from codewright.tools.errors import FatalToolError, RespondToModelError
 
@@ -64,8 +65,9 @@ async def run_turn(
             return None
 
         if not compacted_this_turn and session.context.should_compact():
+            tokens_before = session.context.total_tokens()
             await session.emit_event(
-                EvWarning(message="[compact] context limit reached; compacting"),
+                EvCompactionStarted(reason="auto", tokens_before=tokens_before),
                 sub_id,
             )
             await compact_history(
@@ -81,6 +83,13 @@ async def run_turn(
                         ]
                     },
                 )
+            )
+            await session.emit_event(
+                EvCompactionCompleted(
+                    tokens_before=tokens_before,
+                    tokens_after=session.context.total_tokens(),
+                ),
+                sub_id,
             )
             compacted_this_turn = True
 

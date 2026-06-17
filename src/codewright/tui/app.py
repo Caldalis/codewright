@@ -28,6 +28,8 @@ from rich.text import Text
 from codewright.protocol import (
     EvAgentMessage,
     EvAgentMessageDelta,
+    EvCompactionCompleted,
+    EvCompactionStarted,
     EvError,
     EvExecApprovalRequest,
     EvPatchApprovalRequest,
@@ -67,6 +69,7 @@ _MOUSE_SCROLL_LINES = 4
 _BLOCK_HEADINGS = {
     "approval": "! Approval",
     "assistant": "< Codewright",
+    "compact": "~ Compact",
     "error": "x Error",
     "plan": "# Plan",
     "session": "# Session",
@@ -79,6 +82,7 @@ _BLOCK_HEADINGS = {
 _BLOCK_HEADING_STYLES = {
     "approval": "bold yellow",
     "assistant": "bold green",
+    "compact": "bold cyan",
     "error": "bold red",
     "plan": "bold cyan",
     "session": "dim",
@@ -90,6 +94,7 @@ _BLOCK_HEADING_STYLES = {
 
 _BLOCK_BODY_STYLES = {
     "approval": "yellow",
+    "compact": "cyan",
     "error": "red",
     "session": "dim",
     "system": "dim",
@@ -102,7 +107,6 @@ class _PendingApproval:
     request_id: str
     action: PendingAction
     is_exec: bool
-
 
 class _TranscriptControl(UIControl):
     def __init__(self, owner: TuiApp) -> None:
@@ -133,6 +137,7 @@ class _TranscriptControl(UIControl):
             self._owner.scroll_history_down(_MOUSE_SCROLL_LINES)
             return None
         return NotImplemented
+
 
 class _HistoryScrollbarMargin(Margin):
 
@@ -173,7 +178,9 @@ class _HistoryScrollbarMargin(Margin):
                 fragments.append(("", "\n"))
         return fragments
 
+
 class TuiApp:
+
     def __init__(
         self,
         session: Session,
@@ -214,6 +221,7 @@ class TuiApp:
         self._input_view: TextArea | None = None
         self._pending_approval: _PendingApproval | None = None
         self._approval_queue: list[_PendingApproval] = []
+        self._history.append(self._startup_banner())
         self._rebuild_history_cache()
 
     async def run(self) -> None:
@@ -377,12 +385,6 @@ class TuiApp:
         self._rebuild_history_cache()
         self._invalidate()
 
-    def _history_text(self) -> str:
-        return self._history_plain
-
-    def _refresh_history_view(self) -> None:
-        self._rebuild_history_cache()
-
     def scroll_history_up(self, amount: int) -> None:
         current = self._history_top_line()
         self._history_follow_tail = False
@@ -461,10 +463,7 @@ class TuiApp:
                 max_chars=min(_MAX_STREAM_PREVIEW_CHARS, max(24, width // 3)),
             )
             parts.append(
-                [
-                    ("class:status.key", "stream "),
-                    ("class:status", preview),
-                ]
+                [("class:status.key", "stream "), ("class:status", preview)]
             )
         if width >= 68:
             parts.append([("class:status.key", "F1 "), ("class:status", "details")])
@@ -504,8 +503,8 @@ class TuiApp:
                 ("class:status.detail", "scroll"),
             ],
             [
-                ("class:status.detail.key", "Ctrl-End "),
-                ("class:status.detail", "bottom"),
+                ("class:status.detail.key", "Ctrl-J "),
+                ("class:status.detail", "newline"),
             ],
             [
                 ("class:status.detail.key", "F1 "),
@@ -707,6 +706,25 @@ class TuiApp:
             self._delta_buf = ""
             self._clear_pending_approvals()
             self._append_history(self._block("system", f"turn aborted: {msg.reason}"))
+        elif isinstance(msg, EvCompactionStarted):
+            self._status.turn_state = "compacting"
+            self._append_history(
+                self._block(
+                    "compact",
+                    f"Compacting conversation (~{msg.tokens_before:,} tokens) "
+                    "to free up context...",
+                )
+            )
+        elif isinstance(msg, EvCompactionCompleted):
+            self._status.turn_state = "running"
+            freed = msg.tokens_before - msg.tokens_after
+            self._append_history(
+                self._block(
+                    "compact",
+                    f"Compacted: {msg.tokens_before:,} -> {msg.tokens_after:,} "
+                    f"tokens (freed {freed:,})",
+                )
+            )
         elif isinstance(msg, EvWarning):
             self._append_history(self._block("warning", msg.message))
         elif isinstance(msg, EvError):
@@ -757,6 +775,22 @@ class TuiApp:
         for line in body.splitlines():
             text.append("  ", style="dim")
             text.append(f"{line}\n", style=resolved_body_style)
+        return text
+
+    def _startup_banner(self) -> Text:
+        text = Text()
+        text.append("CODEWRIGHT", style="bold cyan")
+        text.append("  · a powerful and concise coding agent\n", style="dim cyan")
+        text.append(
+            f"  model {self.session.model}  ·  {self.session.permission_profile.value}\n",
+            style="dim",
+        )
+        text.append(f"  cwd   {self.session.cwd}\n", style="dim")
+        text.append(
+            "  Enter send · Ctrl+J newline · PgUp/PgDn or wheel scroll · "
+            "Ctrl+C interrupt · Ctrl+D exit",
+            style="dim",
+        )
         return text
 
     def _rebuild_history_cache(self) -> None:

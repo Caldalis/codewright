@@ -12,15 +12,14 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 def install_keybindings(app: TuiApp) -> KeyBindings:
-
     kb = KeyBindings()
     approval_active = Condition(lambda: app.has_pending_approval)
     input_empty = Condition(lambda: app.input_is_empty)
     input_focused = has_focus(app._input_view.buffer)
-
     @kb.add("enter", filter=input_focused, eager=True)
     def _(event) -> None:
-        event.current_buffer.validate_and_handle()
+        if event.current_buffer.text.strip():
+            event.current_buffer.validate_and_handle()
 
     @kb.add("c-j", filter=input_focused)
     def _(event) -> None:
