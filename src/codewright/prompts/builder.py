@@ -13,11 +13,18 @@ if TYPE_CHECKING:
 
 _PROMPTS_DIR = Path(__file__).resolve().parent
 _DEFAULT_SYSTEM_PROMPT_PATH = _PROMPTS_DIR / "system.md"
+_APPLY_PATCH_INSTRUCTIONS_PATH = _PROMPTS_DIR / "apply_patch_tool_instructions.md"
 _ROLES_DIR = _PROMPTS_DIR / "roles"
 
 
 def load_default_system_prompt() -> str:
     return _DEFAULT_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def load_apply_patch_instructions() -> str:
+    if not _APPLY_PATCH_INSTRUCTIONS_PATH.exists():
+        return ""
+    return _APPLY_PATCH_INSTRUCTIONS_PATH.read_text(encoding="utf-8")
 
 
 def _read_role_snippet(role: str) -> str:
@@ -47,6 +54,14 @@ def _render_developer_layer(
         f"role: {turn_context.role}\n"
         "</turn_settings>"
     )
+
+    apply_patch_help = load_apply_patch_instructions()
+    if apply_patch_help.strip():
+        parts.append(
+            "<apply_patch_instructions>\n"
+            f"{apply_patch_help.strip()}\n"
+            "</apply_patch_instructions>"
+        )
 
     role_snippet = _read_role_snippet(turn_context.role)
     if role_snippet.strip():
