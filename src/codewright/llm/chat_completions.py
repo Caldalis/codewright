@@ -154,6 +154,7 @@ class ChatCompletionsAdapter(LLMProvider):
             "model": self._model,
             "messages": _to_provider_messages(messages),
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         provider_tools = _to_provider_tools(tools)
         if provider_tools:

@@ -1,44 +1,136 @@
-# User config: copy to ~/.codewright/config.toml
-# Effective value precedence:
-# command line arguments > environment variables > this config file > built-in defaults
+# Codewright user config.
+#
+# Copy this file to:  ~/.codewright/config.toml   (the only path Codewright reads)
+#
+# Effective-value precedence (highest wins):
+#   CLI flags  >  environment variables  >  this file  >  built-in defaults
+#
+# EVERYTHING here is OPTIONAL and is shown with its built-in default, with ONE
+# exception: you must supply an API key from one of the three sources in [llm];
+# without a key the agent cannot call a model. An empty config file is valid and
+# falls back to all defaults.
 
+
+# [llm] — model provider
 [llm]
-# Audit label only. Provider behavior is selected by api_style/base_url/model.
+
+# Audit label only — does NOT change behavior (the real provider is selected by
+# api_style + base_url + model). Optional. Default: "openai".
 provider = "openai"
 
-# "chat_completions" works with OpenAI-compatible providers such as DeepSeek,
-# Qwen/DashScope compatible mode, Ollama, and most local gateways.
-# "responses" uses the OpenAI Responses API.
+# Wire protocol. Optional. Default: "chat_completions".
+#   "chat_completions" — OpenAI and OpenAI-compatible providers (DeepSeek,
+#                        Qwen/DashScope compatible mode, Ollama, local gateways).
+#   "responses"        — OpenAI Responses API.
 api_style = "chat_completions"
 
-model = "gpt-4o"
-api_key_env = "OPENAI_API_KEY"
+# Model id. Optional. Default: "gpt-4o-mini".
+model = "gpt-5.5"
 
-# Optional OpenAI-compatible base URL.
+# --- API KEY: REQUIRED to call a model, via ONE of these three sources ---
+# (precedence among them: api_key  >  api_key_env  >  the OPENAI_API_KEY env var)
+#
+# (a) RECOMMENDED — name of an environment variable that holds the key, so the
+#     secret stays out of this file. Optional. Default: none.
+api_key_env = "OPENAI_API_KEY"
+#
+# (b) The key inline. Discouraged (stored in plaintext). Optional. Default: "".
+# api_key = "sk-..."
+#
+# (c) Or set neither here and just export OPENAI_API_KEY in your shell.
+
+# OpenAI-compatible base URL. Optional. Default: none (the provider's default).
 # base_url = "https://api.deepseek.com/v1"
 # base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 # base_url = "http://localhost:11434/v1"
 
+
+# [agent] — context window + starting role
+
 [agent]
+
+# Context-window size (tokens) used to decide when history is auto-compacted.
+# Must be a positive integer. Optional. Default: 128000.
 max_context_tokens = 128000
+
+# Fraction of max_context_tokens at which compaction triggers.
+# Must be in the range (0, 1]. Optional. Default: 0.9.
 compact_threshold = 0.9
+
+# Starting role for the root agent. Built-in: "default", "explorer", "worker";
+# or a custom role you defined (see "Custom roles" note at the bottom).
+# Optional. Default: "default".
 default_role = "default"
 
-[workspace]
-permission_profile = "workspace_write" # read_only | workspace_write | dangerous
 
-# Optional MCP servers.
-# Tool names are registered as <server>__<tool>, for example github__create_issue.
+
+# [workspace] — permissions
+[workspace]
+
+# How much the agent may do without asking. Optional. Default: "workspace_write".
+#   "read_only"       — no shell exec at all; only read/search file tools.
+#   "workspace_write" — exec auto-allowed inside the workspace; destructive
+#                       commands (rm -rf, git reset --hard, network, …) and any
+#                       cwd outside the workspace still prompt for approval.
+#   "dangerous"       — nothing is auto-allowed; every exec prompts.
+permission_profile = "workspace_write"
+
+
+
+# [shell] — the `shell` tool
+[shell]
+
+# Path to a bash executable for the `shell` tool. Optional. Default: none —
+# Codewright auto-detects Git Bash / a non-WSL bash on PATH, and on Windows
+# falls back to cmd.exe (with session-state persistence disabled and limited
+# safety checks) if no bash is found. Set this to force a specific bash.
+# path = "C:/Program Files/Git/bin/bash.exe"
+# path = "/usr/bin/bash"
+
+
+
+# [skills] — self-improving skills (stored under <workspace>/skills/)
+[skills]
+
+# Extra commands to treat as TEST RUNNERS when detecting a "red -> green"
+# transition (the objective signal that lets the agent distill a new skill).
+# The built-in detector already recognizes pytest / unittest / tox / nox /
+# jest / vitest / mocha / go test / cargo test / and more — add entries here
+# ONLY for a non-standard runner. A command matches if it starts with a prefix.
+# Optional. Default: [] (built-in detection only).
+# test_commands = ["make test", "./run-tests.sh"]
+
+
+
+# [mcp_servers.<name>] — optional MCP tool servers
+# Each server's tools are registered as  <name>__<tool>  (e.g. github__create_issue).
+# Optional. Default: none. Each server uses one of two transports.
 #
+# --- stdio (local subprocess): requires `command`; `args`/`env` optional ---
 # [mcp_servers.github]
 # transport = { type = "stdio", command = "npx", args = ["-y", "@github/mcp"] }
+# # env = { DEBUG = "1" }            # optional. Default: {}
+# # startup_timeout_sec = 30.0       # optional. Default: 30.0
 #
+# --- streamable_http (remote endpoint): requires `url`; bearer token optional ---
 # [mcp_servers.linear]
 # transport = { type = "streamable_http", url = "https://mcp.linear.app/sse", bearer_token_env_var = "LINEAR_TOKEN" }
 #
-# Backward-compatible expanded form is also accepted:
+# --- expanded form (sibling keys instead of an inline transport table) ---
+# `transport` may be omitted: it is inferred as stdio from `command`, or as
+# streamable_http from `url`.
 # [mcp_servers.local]
-# transport = "stdio"
 # command = "python"
 # args = ["server.py"]
 # env = { DEBUG = "1" }
+
+
+# Custom roles (NOT configured here): a role named in [agent].default_role can be
+# a built-in (default / explorer / worker) or a custom one defined as its own
+# file under  ~/.codewright/agents/<name>.toml  (name, description, and either
+# system_prompt or system_prompt_path, plus optional reasoning_effort).
+#
+# Handy environment variables (override this file): CODEWRIGHT_MODEL,
+# CODEWRIGHT_API_KEY, CODEWRIGHT_API_KEY_ENV, CODEWRIGHT_BASE_URL (or
+# OPENAI_BASE_URL), CODEWRIGHT_PERMISSION_PROFILE, CODEWRIGHT_DEFAULT_ROLE,
+# CODEWRIGHT_SHELL_PATH, CODEWRIGHT_MAX_CONTEXT_TOKENS, CODEWRIGHT_COMPACT_THRESHOLD.

@@ -15,6 +15,8 @@ from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.input.base import Input
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl, UIContent, UIControl
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.margins import Margin
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output.base import Output
 from prompt_toolkit.styles import Style
@@ -132,6 +134,44 @@ class _TranscriptControl(UIControl):
             return None
         return NotImplemented
 
+class _HistoryScrollbarMargin(Margin):
+
+    def __init__(self, owner: TuiApp) -> None:
+        self._owner = owner
+
+    def get_width(self, get_ui_content: Any) -> int:
+        return 1
+
+    def create_margin(
+        self, window_render_info: Any, width: int, height: int
+    ) -> list[tuple[str, str]]:
+        if height <= 0:
+            return []
+        owner = self._owner
+        total = max(1, owner._history_content_line_count)
+        view = max(1, owner._history_view_height)
+
+        fragments: list[tuple[str, str]] = []
+        if total <= view:
+            for i in range(height):
+                fragments.append(("class:scrollbar.track", " "))
+                if i < height - 1:
+                    fragments.append(("", "\n"))
+            return fragments
+
+        top = owner._history_top_line()
+        max_top = max(1, total - view)
+        thumb = max(1, min(height, round(height * view / total)))
+        pos = round((height - thumb) * top / max_top)
+        pos = max(0, min(pos, height - thumb))
+        for i in range(height):
+            if pos <= i < pos + thumb:
+                fragments.append(("class:scrollbar.button", "█"))
+            else:
+                fragments.append(("class:scrollbar.track", "│"))
+            if i < height - 1:
+                fragments.append(("", "\n"))
+        return fragments
 
 class TuiApp:
     def __init__(
@@ -239,10 +279,13 @@ class TuiApp:
             content=_TranscriptControl(self),
             always_hide_cursor=True,
             style="class:history",
+            right_margins=[_HistoryScrollbarMargin(self)],
         )
         self._input_view = TextArea(
-            height=1,
-            multiline=False,
+            height=Dimension(min=1, max=6),
+            multiline=True,
+            wrap_lines=True,
+            dont_extend_height=True,
             prompt="> ",
             accept_handler=self._accept_input,
             style="class:input",
@@ -294,6 +337,8 @@ class TuiApp:
                     "approval.key": "bold #86efac bg:#3a2f00",
                     "history": "",
                     "input": "#d7d7d7",
+                    "scrollbar.track": "#3a3a3a",
+                    "scrollbar.button": "#7dd3fc",
                     "status": "bg:#202124 #a8a8a8",
                     "status.brand": "bold #7dd3fc bg:#202124",
                     "status.detail": "bg:#181818 #a8a8a8",
