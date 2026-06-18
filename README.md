@@ -1,6 +1,6 @@
 # Codewright
 
-A powerful and concise coding agent coding for the command line, written in Python.
+A powerful and concise coding agent for the command line, written in Python.
 
 Codewright : a streaming LLM loop, a polymorphic tool runtime, multi-agent
 orchestration, session persistence, MCP tool servers, and an interactive TUI.
@@ -12,11 +12,24 @@ orchestration, session persistence, MCP tool servers, and an interactive TUI.
 - **Semantic file tools** (`read_file`, `list_dir`, `find_files`, `search_text`)
   plus a stateful **`shell`** tool family (bash-anchored, with background jobs
   and output paging) and transactional **`apply_patch`** edits.
+- **Task planning**: the agent maintains a live, step-by-step plan
+  (`update_plan`) that streams to the TUI so you can watch progress.
 - **Permission profiles** that gate destructive shell commands and out-of-workspace access.
-- **Multi-agent**: spawn child agents that run in their own sessions and report back.
-- **Self-improving skills**: the agent distills reusable, test-verified knowledge
-  into `<workspace>/skills/` and pulls it back in on later tasks.
+- **Multi-agent**: spawn child agents that each run in their own isolated
+  session under a built-in role — `explorer` (read-only investigation),
+  `worker` (scoped execution), or `default` — and report back to the parent.
+  The primary agent's role is set by `[agent] default_role` /
+  `CODEWRIGHT_DEFAULT_ROLE`.
+- **Project instructions**: an `AGENTS.md` (or `.agents.md`) found in the
+  workspace — searched from the working directory up to the workspace root — is
+  injected into every turn as guidance for the agent.
+- **Skills**: project-scoped instructions and workflows under
+  `<workspace>/skills/` (agentskills.io format). Author them by hand, and/or let
+  the agent auto-distill reusable, test-verified knowledge into new skills; it
+  pulls the relevant ones back in on later tasks via the `skill` tool.
 - **MCP** tool servers over stdio and streamable-http.
+- **Automatic context compaction**: as history approaches the model's context
+  window it is summarized down in place, so long sessions keep running.
 - **Session persistence + resume** via append-only JSONL rollouts.
 - **Pluggable providers**: OpenAI Chat Completions or Responses API, and any
   OpenAI-compatible endpoint (DeepSeek, Qwen/DashScope, Ollama, local gateways).
