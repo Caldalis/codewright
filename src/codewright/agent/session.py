@@ -385,6 +385,23 @@ class Session:
             return
         await self._rollout.append(line)
 
+    async def record_plan_update(
+        self, plan: list[PlanItem], explanation: str | None = None
+    ) -> None:
+
+        from codewright.persistence.rollout import RolloutLine
+
+        self.plan = list(plan)
+        await self.record_rollout(
+            RolloutLine(
+                type="plan_update",
+                payload={
+                    "plan": [item.model_dump(mode="json") for item in plan],
+                    "explanation": explanation,
+                },
+            )
+        )
+
     def replay(self, lines: list[Any]) -> None:
 
         from codewright.llm.base import CanonicalMessage, ToolCallBlock

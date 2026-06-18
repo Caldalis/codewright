@@ -99,6 +99,7 @@ async def run_turn(
             pending_user_input,
             agents_md=agents_md,
             learned_facts=learned_facts,
+            plan=session.plan,
         )
 
         if pending_user_input:

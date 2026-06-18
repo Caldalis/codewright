@@ -47,7 +47,7 @@ class UpdatePlanHandler(ToolHandler):
             ) from exc
 
         session = invocation.session
-        session.plan = list(params.plan)
+        await session.record_plan_update(params.plan, params.explanation)
         await session.emit_event(
             EvPlanUpdate(plan=list(params.plan), explanation=params.explanation)
         )

@@ -9,6 +9,7 @@ from codewright.llm.base import CanonicalMessage
 
 if TYPE_CHECKING:
     from codewright.agent.turn_context import TurnContext
+    from codewright.protocol import PlanItem
 
 
 _PROMPTS_DIR = Path(__file__).resolve().parent
@@ -88,6 +89,20 @@ def _render_environment_block(turn_context: TurnContext) -> str:
     )
 
 
+def _render_plan_reminder(plan: list[PlanItem]) -> str:
+
+    lines = [
+        "This is your current task plan (a status reminder, not a new user "
+        "request). Continue with the in_progress / next pending step. Whenever a "
+        "step changes state or the plan needs revising, call update_plan.",
+        "",
+    ]
+    for idx, item in enumerate(plan, start=1):
+        lines.append(f"{idx}. [{item.status.value}] {item.step}")
+    body = "\n".join(lines)
+    return f"<current_plan>\n{body}\n</current_plan>"
+
+
 class PromptBuilder:
 
 
@@ -102,6 +117,7 @@ class PromptBuilder:
         *,
         agents_md: str | None = None,
         learned_facts: str | None = None,
+        plan: list[PlanItem] | None = None,
     ) -> list[CanonicalMessage]:
         messages: list[CanonicalMessage] = [
             CanonicalMessage(role="system", content=self._system_template),
@@ -114,4 +130,8 @@ class PromptBuilder:
         if user_input:
             wrapped = f"{user_input}\n\n{_render_environment_block(turn_context)}"
             messages.append(CanonicalMessage(role="user", content=wrapped))
+        if plan:
+            messages.append(
+                CanonicalMessage(role="user", content=_render_plan_reminder(plan))
+            )
         return messages
