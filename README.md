@@ -1,5 +1,22 @@
 # Codewright
 
+<div align="center">
+  <p>
+    <a href="./README.md">English</a> |
+    <a href="./README_zh.md">简体中文</a>
+  </p>
+  <p>
+    <img src="https://img.shields.io/badge/python-3.12-blue?logo=python&logoColor=white" alt="Python">
+    <img src="https://img.shields.io/badge/package%20manager-uv-DE5FE9?logo=uv&logoColor=white" alt="uv">
+    <img src="https://img.shields.io/badge/LLM-OpenAI%20compatible-412991?logo=openai&logoColor=white" alt="OpenAI Compatible">
+    <img src="https://img.shields.io/badge/MCP-tools-6f42c1" alt="MCP">
+    <img src="https://img.shields.io/badge/lint-ruff-D7FF64?logo=ruff&logoColor=black" alt="Ruff">
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
+    <a href="https://github.com/Caldalis/codewright/graphs/commit-activity"><img src="https://img.shields.io/github/commit-activity/m/Caldalis/codewright" alt="Commits last month"></a>
+    <a href="https://github.com/Caldalis/codewright/issues"><img src="https://img.shields.io/github/issues/Caldalis/codewright" alt="Issues"></a>
+  </p>
+</div>
+
 A powerful and concise coding agent for the command line, written in Python.
 
 Codewright : a streaming LLM loop, a polymorphic tool runtime, multi-agent
