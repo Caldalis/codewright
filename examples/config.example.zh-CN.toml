@@ -1,0 +1,125 @@
+# Codewright 用户配置文件
+#
+# 复制本文件到：  ~/.codewright/config.toml   （Codewright 只读取这个路径）
+#
+# 生效值的优先级（从高到低）：
+#   命令行参数  >  环境变量  >  本文件  >  内置默认值
+#
+# 下面所有项都是「可选」的，并标注了内置默认值；只有一个例外：你必须在 [llm] 中
+# 通过三种来源之一提供 API key，否则 agent 无法调用模型。空配置文件也是合法的，
+# 会全部回退到默认值
+
+
+# [llm] —— 模型提供方
+[llm]
+
+# 仅作审计标签，「不」影响行为（真正的 provider 由 api_style + base_url + model 决定）
+# 可选。默认："openai"
+provider = "openai"
+
+# 通信协议。可选。默认："chat_completions"
+#   "chat_completions" —— OpenAI 及 OpenAI 兼容提供方（DeepSeek、
+#                        Qwen/DashScope 兼容模式、Ollama、本地网关等）
+#   "responses"        —— OpenAI Responses API
+api_style = "chat_completions"
+
+# 模型 id。可选
+model = "gpt-5.5"
+
+# --- API KEY：调用模型「必填」，以下三种来源任选其一 ---
+# （三者之间的优先级：api_key  >  api_key_env  >  环境变量 OPENAI_API_KEY）
+#
+# (a) 推荐 —— 填写存放 key 的环境变量名，让密钥不出现在本文件里。可选。默认：无
+api_key_env = "OPENAI_API_KEY"
+#
+# (b) 直接内联 key。不推荐（明文存储）。可选。默认：""
+# api_key = "sk-..."
+#
+# (c) 或者这里都不填，直接在 shell 里 export OPENAI_API_KEY
+
+# OpenAI 兼容的 base URL。可选。默认：无（使用该提供方的默认地址）
+# base_url = "https://api.deepseek.com/v1"
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# base_url = "http://localhost:11434/v1"
+
+
+
+# [agent] —— 上下文窗口 + 起始角色
+[agent]
+
+# 上下文窗口大小（token），用于判断历史何时自动压缩
+# 必须是正整数。可选。默认：128000
+max_context_tokens = 128000
+
+# 达到 max_context_tokens 的多少比例时触发压缩
+# 必须在 (0, 1] 范围内。可选。默认：0.9
+compact_threshold = 0.75
+
+# 根 agent 的起始角色。内置："default"、"explorer"、"worker"
+# 或你自定义的角色（见文件底部「自定义角色」说明）
+# 可选。默认："default"
+default_role = "default"
+
+
+# [workspace] —— 权限
+[workspace]
+
+# agent 在「不询问」的情况下能做多少事。可选。默认："workspace_write"
+#   "read_only"       —— 完全不能执行 shell；只有读取/搜索类文件工具
+#   "workspace_write" —— 工作区内的命令自动放行；破坏性命令（rm -rf、
+#                       git reset --hard、网络请求等）以及工作区外的 cwd 仍需审批
+#   "dangerous"       —— 不自动放行任何命令；每条 exec 都询问
+permission_profile = "workspace_write"
+
+
+# [shell] —— `shell` 工具
+[shell]
+
+# `shell` 工具使用的 bash 可执行文件路径。可选。默认：无 ——
+# Codewright 会自动探测 Git Bash / PATH 上的非 WSL bash；在 Windows 上若找不到
+# bash，则退回 cmd.exe（此时关闭会话状态持久化、安全检查受限）
+# 设置此项可强制指定某个 bash
+# path = "C:/Program Files/Git/bin/bash.exe"
+# path = "/usr/bin/bash"
+
+
+# [skills] —— 自我提升 skills（保存在 <workspace>/skills/ 下）
+[skills]
+
+# 在判断「红 -> 绿」跃迁（让 agent 蒸馏出新 skill 的客观信号）时，额外当作
+# 「测试运行器」对待的命令。内置探测已识别 pytest / unittest / tox / nox /
+# jest / vitest / mocha / go test / cargo test 等 —— 仅当你使用非标准测试命令时
+# 才需要在这里补充。命令以这些前缀之一开头即算匹配
+# 可选。默认：[]（仅用内置探测）
+# test_commands = ["make test", "./run-tests.sh"]
+
+
+# [mcp_servers.<name>] —— 可选的 MCP 工具服务器
+# 每个服务器的工具会注册成  <name>__<tool>  （例如 github__create_issue）
+# 可选。默认：无。每个服务器使用以下两种 transport 之一
+# --- stdio（本地子进程）：需要 `command`；`args`/`env` 可选 ---
+# [mcp_servers.github]
+# transport = { type = "stdio", command = "npx", args = ["-y", "@github/mcp"] }
+# # env = { DEBUG = "1" }            # 可选。默认：{}
+# # startup_timeout_sec = 30.0       # 可选。默认：30.0
+#
+# --- streamable_http（远程端点）：需要 `url`；bearer token 可选 ---
+# [mcp_servers.linear]
+# transport = { type = "streamable_http", url = "https://mcp.linear.app/sse", bearer_token_env_var = "LINEAR_TOKEN" }
+#
+# --- 展开写法（用同级键代替内联 transport 表）---
+# `transport` 可省略：由 `command` 推断为 stdio，或由 `url` 推断为 streamable_http
+# [mcp_servers.local]
+# command = "python"
+# args = ["server.py"]
+# env = { DEBUG = "1" }
+
+# 自定义角色（不在本文件配置）：[agent].default_role 指定的角色可以是内置的
+# （default / explorer / worker），也可以是你自定义的 —— 后者是单独的文件，放在
+# ~/.codewright/agents/<name>.toml（包含 name、description，以及 system_prompt
+# 或 system_prompt_path 二选一，外加可选的 reasoning_effort）
+#
+# 常用环境变量（可覆盖本文件）：CODEWRIGHT_MODEL、CODEWRIGHT_API_KEY、
+# CODEWRIGHT_API_KEY_ENV、CODEWRIGHT_BASE_URL（或 OPENAI_BASE_URL）、
+# CODEWRIGHT_PERMISSION_PROFILE、CODEWRIGHT_DEFAULT_ROLE、CODEWRIGHT_SHELL_PATH、
+# CODEWRIGHT_MAX_CONTEXT_TOKENS、CODEWRIGHT_COMPACT_THRESHOLD

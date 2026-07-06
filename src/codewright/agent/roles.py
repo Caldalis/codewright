@@ -87,10 +87,10 @@ def load_builtin_roles() -> RoleRegistry:
     return reg
 
 
-def load_user_roles(codex_home: Path) -> RoleRegistry:
+def load_user_roles(codewright_home: Path) -> RoleRegistry:
 
     reg = RoleRegistry()
-    roles_dir = codex_home / "agents"
+    roles_dir = codewright_home / "agents"
     if not roles_dir.exists():
         return reg
     for path in sorted(roles_dir.glob("*.toml")):
