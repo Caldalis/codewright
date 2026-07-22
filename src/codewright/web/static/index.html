@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Codewright WebSocket 桥接测试页</title>
+<style>
+  /* 极简深色样式 —— 这个页面是教学/冒烟测试用的,正式界面用 Vue 重写 */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: ui-monospace, Consolas, monospace;
+    background: #0d0d0f; color: #d4d4d8;
+    display: flex; flex-direction: column; height: 100vh; padding: 12px; gap: 8px;
+  }
+  h1 { font-size: 14px; color: #a1a1aa; font-weight: normal; }
+  #status { color: #f87171; }
+  #status.open { color: #4ade80; }
+  #log {
+    flex: 1; overflow-y: auto; background: #131316; border: 1px solid #27272a;
+    border-radius: 6px; padding: 8px; font-size: 12px; line-height: 1.7;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .recv { color: #7dd3fc; }        /* 服务器 → 浏览器 的帧,蓝色 */
+  .sent { color: #fbbf24; }        /* 浏览器 → 服务器 的帧,黄色 */
+  .text { color: #e4e4e7; background: #1c1c21; display: block;
+          border-left: 2px solid #4ade80; padding: 4px 8px; margin: 4px 0; }
+  #approval {
+    display: none; background: #3a2f00; color: #facc15; border-radius: 6px;
+    padding: 8px 12px; align-items: center; gap: 8px;
+  }
+  #approval.active { display: flex; }
+  button {
+    background: #27272a; color: #d4d4d8; border: 1px solid #3f3f46;
+    border-radius: 4px; padding: 4px 12px; cursor: pointer; font: inherit;
+  }
+  button:hover { background: #3f3f46; }
+  #composer { display: flex; gap: 8px; }
+  #prompt {
+    flex: 1; background: #131316; color: #e4e4e7; border: 1px solid #27272a;
+    border-radius: 6px; padding: 8px; font: inherit;
+  }
+</style>
+</head>
+<body>
+
+<h1>Codewright 桥接测试页 —— 连接状态: <span id="status">未连接</span></h1>
+
+<div id="log"></div>
+
+<!-- 审批条:收到 exec/patch_approval_request 事件时显示 -->
+<div id="approval">
+  <span id="approval-summary"></span>
+  <button data-decision="approved">同意(y)</button>
+  <button data-decision="approved_for_session">本会话同意(s)</button>
+  <button data-decision="denied">拒绝(n)</button>
+  <button data-decision="abort">中止(a)</button>
+</div>
+
+<div id="composer">
+  <input id="prompt" placeholder="输入任务,回车发送(例:列出当前目录有哪些文件)">
+  <button id="interrupt">中断</button>
+</div>
+
+<script>
+// ============================================================
+// WebSocket 入门:总共只有 4 个要点 —— 建立、收、发、断开。
+// ============================================================
+
+// 【要点 1:建立连接】
+// http:// 对应 ws://,https:// 对应 wss://。
+// new WebSocket(url) 立刻返回(非阻塞),此时还没连上;
+// 连接是否成功,通过下面的 onopen / onerror 回调"事后"通知你。
+// 这和 fetch() 每次现场建一条连接、拿到响应就结束的模式完全不同:
+// 这条连接建好后会一直挂着,双方随时都能给对方发消息。
+const ws = new WebSocket(`ws://${location.host}/ws`);
+
+const log = document.getElementById("log");
+const statusEl = document.getElementById("status");
+const approvalEl = document.getElementById("approval");
+
+function addLine(cls, text) {
+  const div = document.createElement("div");
+  div.className = cls;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;   // 自动滚到底
+}
+
+// 【要点 2:连接生命周期回调】
+// onopen —— 握手成功,从现在起才可以 send()
+// onclose —— 连接断了(双方任何一方关闭、网络故障都会触发)
+// onerror —— 出错(之后一定还会跟一个 onclose)
+ws.onopen = () => {
+  statusEl.textContent = "已连接";
+  statusEl.className = "open";
+  addLine("recv", "── WebSocket 已连接,等待引擎事件 ──");
+};
+ws.onclose = (e) => {
+  statusEl.textContent = `已断开 (code=${e.code})`;
+  statusEl.className = "";
+};
+ws.onerror = () => addLine("recv", "── 连接出错 ──");
+
+// 【要点 3:收消息】
+// 服务器随时可能推送消息过来,每来一帧就触发一次 onmessage。
+// 注意:是"服务器主动推给你",不是你请求了它才回 —— 这是和 GET/POST
+// 最本质的区别。我们的桥接服务把引擎的每个 Event 序列化成一帧 JSON。
+let streamingDiv = null;   // 正在流式输出的那条消息对应的 DOM 节点
+
+ws.onmessage = (frame) => {
+  const event = JSON.parse(frame.data);   // {"id": "...", "msg": {"type": "...", ...}}
+  const msg = event.msg;
+
+  // 打字机效果的实现:agent_message_delta 事件一小段一小段地来,
+  // 把每段文字 append 到同一个 DOM 节点上,而不是每次新建一行
+  if (msg.type === "agent_message_delta") {
+    if (!streamingDiv) {
+      streamingDiv = document.createElement("div");
+      streamingDiv.className = "text";
+      log.appendChild(streamingDiv);
+    }
+    streamingDiv.textContent += msg.delta;
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
+  streamingDiv = null;   // 任何非 delta 事件都视为这段流式输出结束
+
+  // 审批请求:引擎"反向"问浏览器 —— 这个方向的通信 HTTP 做不到
+  if (msg.type === "exec_approval_request" || msg.type === "patch_approval_request") {
+    approvalEl.className = "active";
+    approvalEl.dataset.requestId = msg.request_id;
+    approvalEl.dataset.kind = msg.type === "exec_approval_request"
+      ? "exec_approval_response" : "patch_approval_response";
+    document.getElementById("approval-summary").textContent =
+      `审批请求: ${msg.action.summary}`;
+  }
+
+  // 其余事件原样打印,方便你观察引擎到底吐了些什么
+  addLine("recv", `⇦ ${JSON.stringify(msg)}`);
+};
+
+// 【要点 4:发消息】
+// ws.send() 只接受字符串/二进制,所以对象要先 JSON.stringify。
+// 发出去的格式就是后端 protocol/op.py 里定义的 Op —— 带 "type" 判别字段。
+function sendOp(op) {
+  ws.send(JSON.stringify(op));
+  addLine("sent", `⇨ ${JSON.stringify(op)}`);
+}
+
+// 输入框回车 → 提交一轮任务(OpUserTurn)
+const promptEl = document.getElementById("prompt");
+promptEl.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !promptEl.value.trim()) return;
+  sendOp({ type: "user_turn", items: [{ type: "text", text: promptEl.value.trim() }] });
+  promptEl.value = "";
+});
+
+// 中断按钮 → OpInterrupt(还记得吗:它走 _handle_out_of_band_op 侧门,
+// 所以哪怕引擎正卡在长任务里,这条消息也能立刻生效)
+document.getElementById("interrupt").addEventListener("click", () => {
+  sendOp({ type: "interrupt" });
+});
+
+// 审批按钮 → OpExecApprovalResponse / OpPatchApprovalResponse
+approvalEl.addEventListener("click", (e) => {
+  const decision = e.target.dataset?.decision;
+  if (!decision) return;
+  sendOp({
+    type: approvalEl.dataset.kind,
+    request_id: approvalEl.dataset.requestId,
+    decision: decision,
+  });
+  approvalEl.className = "";
+});
+</script>
+</body>
+</html>
