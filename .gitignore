@@ -6,7 +6,12 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-
+frontend/dist/
+frontend/node_modules/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/*.tsbuildinfo
 .venv/
 
 .pytest_cache/
