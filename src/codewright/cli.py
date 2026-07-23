@@ -110,8 +110,25 @@ def main() -> None:
         default=None,
     )
 
+    p_serve = sub.add_parser("serve", help="run the WebSocket bridge for web front ends")
+    p_serve.add_argument("--workspace", default=".")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8765)
+    p_serve.add_argument("--model", default=None)
+    p_serve.add_argument("--provider-base-url", default=None)
+    p_serve.add_argument(
+        "--api-style",
+        choices=("chat_completions", "responses"),
+        default=None,
+    )
+    p_serve.add_argument(
+        "--permission-profile",
+        choices=tuple(p.value for p in PermissionProfile),
+        default=None,
+    )
+
     argv = sys.argv[1:]
-    subcommands = {"run", "resume", "list-sessions", "tui"}
+    subcommands = {"run", "resume", "list-sessions", "tui", "serve"}
     if not argv or (argv[0] not in subcommands and argv[0] not in ("-h", "--help")):
         argv = ["tui", *argv]
     args = parser.parse_args(argv)
@@ -130,6 +147,9 @@ async def _dispatch(args: argparse.Namespace) -> None:
         return
     if args.cmd == "tui":
         await _cmd_tui(args)
+        return
+    if args.cmd == "serve":
+        await _cmd_serve(args)
         return
     raise SystemExit(f"unknown subcommand: {args.cmd}")
 
@@ -198,6 +218,31 @@ async def _cmd_tui(args: argparse.Namespace) -> None:
         await TuiApp(sess).run()
     finally:
         await sess.shutdown()
+
+
+async def _cmd_serve(args: argparse.Namespace) -> None:
+    import uvicorn
+
+    from codewright.web import create_app
+
+    config = _effective_config(args)
+    workspace = _resolve_workspace(args.workspace)
+
+    async def session_factory(session_id: str | None) -> Session:
+        if session_id:
+            return await _resume_session_from_config(
+                workspace=workspace, session_id=session_id, config=config
+            )
+        return await _bootstrap_session(
+            workspace=workspace, config=config, persist=True
+        )
+
+    app = create_app(session_factory, workspace_root=workspace)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
+    )
+    print(f"codewright bridge: http://{args.host}:{args.port}  (test page at /)")
+    await server.serve()
 
 
 def _effective_config(args: argparse.Namespace) -> CodewrightConfig:

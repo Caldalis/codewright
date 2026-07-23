@@ -1,7 +1,7 @@
 [project]
 name = "codewright"
 version = "0.1.0"
-description = "A Codex-inspired Python coding agent"
+description = "A Python coding agent"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = {text = "MIT"}
@@ -13,6 +13,9 @@ dependencies = [
     "openai>=1.40",
     "prompt-toolkit>=3.0",
     "mcp>=1.27,<2",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+    "websockets>=13",
 ]
 
 [project.scripts]
