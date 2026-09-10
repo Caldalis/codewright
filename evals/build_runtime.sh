@@ -10,17 +10,21 @@
 # The tree is self-contained: the venv's interpreter lives at /opt/cw/python, so
 # every absolute path inside it stays valid after untarring at /opt/cw.
 #
-# Build on the SAME architecture you will evaluate on (the runtime is native).
+# Built for linux/amd64, because every SWE-bench instance image is x86_64. On an
+# arm64 host this runs under emulation -- slower to build, but the result is the
+# only thing that can exec inside the instance containers. A native arm64 build
+# would fail there with "exec format error".
 #
 #   ./evals/build_runtime.sh [output_dir]        # default: evals/_runtime
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${1:-$REPO_ROOT/evals/_runtime}"
+PLATFORM="${CW_RUNTIME_PLATFORM:-linux/amd64}"
 mkdir -p "$OUT_DIR"
 
-echo ">> building codewright runtime (arch: $(uname -m))"
-docker run --rm \
+echo ">> building codewright runtime for $PLATFORM (host: $(uname -m))"
+docker run --rm --platform "$PLATFORM" \
   -v "$REPO_ROOT":/src:ro \
   -v "$OUT_DIR":/out \
   ubuntu:22.04 bash -c '
@@ -38,6 +42,7 @@ uv venv --python "$PY" /opt/cw/venv >/dev/null 2>&1
 uv pip install --quiet --python /opt/cw/venv/bin/python /src
 
 /opt/cw/venv/bin/codewright --help >/dev/null
+echo "   interpreter: $(uname -m)"
 tar czf /out/cw-runtime.tgz -C / opt/cw
 '
 echo ">> wrote $OUT_DIR/cw-runtime.tgz ($(du -h "$OUT_DIR/cw-runtime.tgz" | cut -f1))"

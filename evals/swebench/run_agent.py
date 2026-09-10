@@ -55,22 +55,43 @@ def sh(cmd: list[str], timeout: int | None = _DEFAULT_CMD_TIMEOUT) -> subprocess
 
 
 def instance_image(instance: dict[str, Any]) -> str:
-    """Authoritative image name, straight from the swebench package."""
-    try:
-        from swebench.harness.test_spec.test_spec import make_test_spec
-    except ImportError as exc:  # pragma: no cover
+    """Authoritative image name, carried by the dataset itself.
+
+    swebench >= 5 ships the image name as a dataset column, already pinned to
+    x86_64. Deriving it ourselves would reintroduce the architecture guessing
+    older versions did off `platform.machine()` -- which picks arm64 on an
+    Apple-silicon laptop, and most arm64 instance images do not exist.
+    """
+    image = instance.get("image")
+    if not image:
         raise SystemExit(
-            "swebench is not installed -- `pip install swebench`. It is the source "
-            "of truth for instance image names and is needed for grading anyway."
-        ) from exc
-    return make_test_spec(instance).instance_image_key
+            f"{instance['instance_id']}: dataset has no `image` column. Use a "
+            "swebench>=5 dataset such as SWE-bench/SWE-bench_Lite; the older "
+            "princeton-nlp/* datasets predate it."
+        )
+    return image
 
 
-def load_instances(dataset: str, split: str, subset: int | None, seed: int) -> list[dict]:
+def load_instances(
+    dataset: str,
+    split: str,
+    subset: int | None,
+    seed: int,
+    only: list[str] | None = None,
+) -> list[dict]:
     from datasets import load_dataset
 
     rows = [dict(r) for r in load_dataset(dataset, split=split)]
     rows.sort(key=lambda r: r["instance_id"])  # deterministic base order
+    if only:
+        # An explicit list wins over --subset: this is the smoke-test and
+        # single-failure-rerun path, and silently sampling it would defeat both.
+        wanted = set(only)
+        rows = [r for r in rows if r["instance_id"] in wanted]
+        missing = wanted - {r["instance_id"] for r in rows}
+        if missing:
+            raise SystemExit(f"not in {dataset} [{split}]: {', '.join(sorted(missing))}")
+        return rows
     if subset is not None and subset < len(rows):
         # Fixed seed + sorted base order == the same subset on every machine.
         rows = random.Random(seed).sample(rows, subset)
@@ -175,15 +196,22 @@ def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -
         # tool call, and `git add -A` below would stage it. Remove it first so
         # nothing we added can reach a graded patch.
         sh(["docker", "exec", cid, "rm", "-rf", "/testbed/.codewright"])
+        # `safe.directory` because git refuses to touch a tree whose owner is not
+        # the calling uid ("detected dubious ownership"). When that fires, git
+        # stops treating /testbed as a repo at all and falls back to --no-index,
+        # where `--cached` is not even a valid option -- so a correct fix comes
+        # back as an empty patch and scores as no_patch. Silent, and total.
+        git = ["docker", "exec", cid, "git", "-c", "safe.directory=*", "-C", "/testbed"]
         # Stage before diffing: plain `git diff` omits untracked files, so any
         # fix that adds a source file would score as no_patch. `--cached` after
         # `add -A` is what the SWE-bench reference implementations do.
-        sh(["docker", "exec", cid, "git", "-C", "/testbed", "add", "-A"], timeout=120)
-        diff = sh(
-            ["docker", "exec", cid, "git", "-C", "/testbed", "diff", "--cached"],
-            timeout=120,
-        )
+        add = sh(git + ["add", "-A"], timeout=120)
+        diff = sh(git + ["diff", "--cached"], timeout=120)
         record["patch"] = diff.stdout if diff.returncode == 0 else ""
+        if add.returncode != 0 or diff.returncode != 0:
+            # Distinguish "the agent changed nothing" from "we failed to read
+            # what it changed". Both look like no_patch in the bucket table.
+            record["git_error"] = (add.stderr or diff.stderr).strip()[:500]
 
         if record["status"] == "agent_timeout":
             pass
@@ -209,9 +237,11 @@ def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run codewright over a SWE-bench split.")
-    ap.add_argument("--dataset", default="princeton-nlp/SWE-bench_Lite")
+    ap.add_argument("--dataset", default="SWE-bench/SWE-bench_Lite")
     ap.add_argument("--split", default="test")
     ap.add_argument("--subset", type=int, default=None, help="evaluate a random subset of N instances")
+    ap.add_argument("--instance", action="append", metavar="ID",
+                    help="run only this instance (repeatable); overrides --subset")
     ap.add_argument("--seed", type=int, default=0, help="subset seed (report it alongside the score)")
     ap.add_argument("--runtime", type=Path, required=True, help="cw-runtime.tgz from build_runtime.sh")
     ap.add_argument("--out", type=Path, required=True, help="run directory")
@@ -220,7 +250,8 @@ def main() -> None:
     ap.add_argument("--max-steps", type=int, default=60)
     ap.add_argument("--timeout", type=int, default=1800, help="per-instance wall clock, seconds")
     ap.add_argument("--workers", type=int, default=8)
-    ap.add_argument("--platform", default=None, help="e.g. linux/amd64")
+    ap.add_argument("--platform", default="linux/amd64",
+                help="instance images are x86_64; overriding this is rarely right")
     args = ap.parse_args()
 
     if not args.runtime.exists():
@@ -236,13 +267,16 @@ def main() -> None:
     if not os.environ.get("CODEWRIGHT_MODEL"):
         raise SystemExit("set --model (or CODEWRIGHT_MODEL) -- otherwise the container defaults to gpt-4o-mini")
 
-    instances = load_instances(args.dataset, args.split, args.subset, args.seed)
+    instances = load_instances(args.dataset, args.split, args.subset, args.seed, args.instance)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "config.json").write_text(json.dumps({
         "dataset": args.dataset, "split": args.split,
-        "subset": args.subset, "seed": args.seed, "n_instances": len(instances),
+        "subset": None if args.instance else args.subset,
+        "seed": args.seed, "n_instances": len(instances),
+        "instances_pinned": args.instance,
         "model": os.environ["CODEWRIGHT_MODEL"], "base_url": os.environ.get("CODEWRIGHT_BASE_URL"),
         "max_steps": args.max_steps, "timeout_s": args.timeout,
+        "platform": args.platform,
         "codewright_commit": sh(
             ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"]
         ).stdout.strip(),

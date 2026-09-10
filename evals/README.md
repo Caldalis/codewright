@@ -11,10 +11,16 @@ Two rules this harness is built around:
 
 ## Requirements
 
-- Linux **x86_64** with Docker. Do not run this on an arm64 Mac: the official
-  instance images are x86-only and emulation is too slow to be usable.
-- ~120 GB free disk for SWE-bench Lite instance images.
-- `pip install swebench datasets`
+- Docker. Linux x86_64 is fastest, but an arm64 Mac works: every instance image
+  is x86_64, and measured on an M-series Mac the amd64 emulation costs only
+  about 15% over native once images are cached. (The 20s for a cold
+  `docker run` is image pull plus first-start, not steady-state emulation.)
+- ~120 GB free disk for a full SWE-bench Lite sweep; a 50-instance subset is
+  closer to 20 GB. Instance images of the same repo share most of their layers.
+- `pip install swebench datasets` — **swebench >= 5**. It ships the instance
+  image name as a dataset column and is what the CLI below assumes.
+- Roughly 8 GB of memory per concurrent instance; testing threads in these repos
+  is the peak. On a small Docker VM, keep `--workers` low.
 
 ## 1. Build the agent runtime (once)
 
@@ -27,7 +33,9 @@ codewright into a relocatable `/opt/cw` tree and drop it into each container.
 ./evals/build_runtime.sh              # -> evals/_runtime/cw-runtime.tgz
 ```
 
-Build it on the same architecture you evaluate on.
+Built for `linux/amd64` by default, which is what the instance containers need —
+an arm64 build would fail inside them with `exec format error`. Override with
+`CW_RUNTIME_PLATFORM` only if you know your images differ.
 
 ## 2. Roll out
 
@@ -38,7 +46,7 @@ export CODEWRIGHT_BASE_URL=...           # everything comes from these env vars
                                          #  inherited, never written into argv)
 
 python evals/swebench/run_agent.py \
-  --dataset princeton-nlp/SWE-bench_Lite \
+  --dataset SWE-bench/SWE-bench_Lite \
   --subset 50 --seed 0 \
   --runtime evals/_runtime/cw-runtime.tgz \
   --model <model-id> \
@@ -56,15 +64,20 @@ token counts, failure status).
 ## 3. Grade with the official harness
 
 ```bash
-python -m swebench.harness.run_evaluation \
-  --dataset_name princeton-nlp/SWE-bench_Lite \
-  --predictions_path evals/runs/<run>/preds.jsonl \
-  --max_workers 8 \
-  --run_id <run>
+evals/.venv/bin/swebench eval SWE-bench/SWE-bench_Lite \
+  -p evals/runs/<run>/preds.jsonl \
+  --run-id <run> \
+  --report-dir evals/runs/<run> \
+  -j 4
 ```
 
-Pin the exact flags against the `swebench` version you install — the CLI does
-change between releases.
+This is the swebench >= 5 CLI; the 4.x `python -m swebench.harness.run_evaluation`
+form is gone. Check `swebench eval --help` against your installed version, since
+the flags do move between releases. Grading pulls its own evaluation images and
+runs the same containers, so budget disk and memory for it too.
+
+The report lands as `<report-dir>/<model_name_or_path>.<run-id>.json` — pass that
+file to `report.py` as `--grading`.
 
 ## 4. Report
 
@@ -77,6 +90,25 @@ python evals/swebench/report.py \
 Prints the resolve rate with a 95% Wilson interval, plus a failure-attribution
 table. **Always publish the interval on a subset** — at n=50 the interval is
 roughly ±13 points, so a bare percentage is close to meaningless.
+
+## Budget the download, not just the compute
+
+Instance images dominate the setup cost, and the constraint is usually bandwidth
+rather than CPU. Measure before committing to a subset size:
+
+| subset | image bytes (deduped) | at 400 KB/s |
+|---|---|---|
+| 20 | 11.3 GB | ~8 h |
+| 50 | 23.1 GB | ~17 h |
+
+Layers are shared across instances of the same repo, so the deduplicated total is
+roughly 40% of the naive sum — but SWE-bench Lite is 114 django + 77 sympy out of
+300, so a random subset still spans most repos. Grading reuses the same images,
+so it costs no extra download.
+
+`docker pull` fetches up to 3 layers at once; on a bandwidth-limited link that is
+*slower* than one stream, since the layers just split the same pipe. If pulls
+crawl, check for another download competing before blaming the registry.
 
 ## Reporting honestly
 
@@ -121,7 +153,9 @@ Read these before quoting a score.
 - **Token counts depend on the provider reporting usage.** The chat-completions
   adapter asks for it via `stream_options: {include_usage: true}`, an
   OpenAI-specific option many compatible gateways ignore. If yours does, every
-  token field reads 0 with no error. Verify with one real call before a sweep.
+  token field reads 0 with no error — so verify with one real call before a
+  sweep. (Checked against `llm-center.modelbest.co` with `glm-5.3-flash`: usage
+  is reported, `input_tokens`/`output_tokens` come back non-zero.)
 - **The rollout runs with blanket approval.** `run_agent.py` passes
   `--permission-profile dangerous --full-auto`, which allows every action with
   no exceptions, so no instance can fail on a guard meant to protect a
