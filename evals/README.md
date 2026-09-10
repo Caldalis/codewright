@@ -19,8 +19,9 @@ Two rules this harness is built around:
   closer to 20 GB. Instance images of the same repo share most of their layers.
 - `pip install swebench datasets` — **swebench >= 5**. It ships the instance
   image name as a dataset column and is what the CLI below assumes.
-- Roughly 8 GB of memory per concurrent instance; testing threads in these repos
-  is the peak. On a small Docker VM, keep `--workers` low.
+- Memory is the other limit. On a 16 GB Mac with an 8 GB Docker VM, `--workers 3`
+  is comfortable; pre-pulling while containers ran was enough to get the pull
+  killed by the OS memory manager.
 
 ## 1. Build the agent runtime (once)
 
@@ -109,6 +110,26 @@ so it costs no extra download.
 `docker pull` fetches up to 3 layers at once; on a bandwidth-limited link that is
 *slower* than one stream, since the layers just split the same pipe. If pulls
 crawl, check for another download competing before blaming the registry.
+
+### Finish the pulls before starting the sweep
+
+Not an optimization — a correctness requirement. The same instance, run twice:
+
+| link | model calls | outcome | wall |
+|---|---|---|---|
+| saturated by a concurrent `docker pull` | died after 7 | 3 attempts, all gateway errors, `infra_error` | 894 s |
+| idle | 11, ran to completion | `patch_produced`, resolved | 123 s |
+
+A gateway that proxies a model streams the response through itself. When our end
+cannot drain the socket fast enough, its downstream write blocks, it stops
+reading upstream, and its own idle timer fires:
+
+    provider error 102503: passthrough stream idle timeout after 120s
+    waiting for next chunk
+
+which arrives looking like a provider fault. Pulling images while agents run will
+manufacture `infra_error` at a rate that has nothing to do with either the agent
+or the gateway.
 
 ## Reporting honestly
 
