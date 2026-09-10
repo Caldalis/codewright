@@ -140,6 +140,7 @@ class ShellHandler(ToolHandler):
                 "command": command,
                 "segments": list(analysis.heads),
                 "flagged": list(analysis.flagged),
+                "hard_flagged": list(analysis.hard_flagged),
                 "readonly": analysis.readonly,
                 "cwd": str(effective_cwd),
                 "session": params.session,
@@ -147,7 +148,11 @@ class ShellHandler(ToolHandler):
                 "timeout_ms": params.timeout_ms,
             },
         )
-        decision = await workspace.check_action(action, invocation.session)
+        decision = await workspace.check_action(
+            action,
+            invocation.session,
+            approval_policy=invocation.turn_context.approval_policy,
+        )
         if decision == ReviewDecision.DENIED:
             raise RespondToModelError(f"shell denied by user/policy: {summary}")
         if decision == ReviewDecision.ABORT:

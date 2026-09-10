@@ -29,6 +29,8 @@ async def resume_session(
     permission_profile: PermissionProfile | None = None,
     role: str = "default",
     mcp_configs: list[Any] | None = None,
+    max_steps: int | None = None,
+    distill: bool = True,
 ) -> Session:
 
     if context_manager is None:
@@ -64,6 +66,8 @@ async def resume_session(
         summarizer=summarizer,
         rollout=recorder,
         role=role,
+        max_steps=max_steps,
+        distill=distill,
     )
 
     session.replay([ln for ln in lines if ln.type != "session_meta"])

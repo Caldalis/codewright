@@ -52,6 +52,10 @@ class CommandAnalysis:
     flagged: tuple[str, ...]
     readonly: bool
     backgrounded: bool
+    # Subset of `flagged` that must never resolve to "allowed" without a human.
+    # Everything else in `flagged` is destructive-but-recoverable (rm -rf, git
+    # reset --hard) and an unattended run needs it to make progress.
+    hard_flagged: tuple[str, ...] = ()
 
 
 def has_background_operator(command: str) -> bool:
@@ -93,11 +97,28 @@ def has_background_operator(command: str) -> bool:
         i += 1
     return False
 
-def analyze_command(command: str) -> CommandAnalysis:
+_MAX_SUBSTITUTION_DEPTH = 4
+
+
+def analyze_command(command: str, _depth: int = 0) -> CommandAnalysis:
     flagged: list[str] = []
     backgrounded = has_background_operator(command)
     if _SUBSTITUTION_RE.search(command):
         flagged.append("command/process substitution ($(...), `...`)")
+        # Analyse what is *inside* the substitution too. The outer pass reads
+        # `echo $(sudo rm -rf /etc)` as a plain `echo`, so a hard flag hidden in
+        # the body would otherwise resolve to "allow".
+        if _depth >= _MAX_SUBSTITUTION_DEPTH:
+            flagged.append(
+                "unanalysable substitution (nested deeper than "
+                f"{_MAX_SUBSTITUTION_DEPTH})"
+            )
+        else:
+            for body in _substitution_bodies(command):
+                if not body.strip():
+                    continue
+                inner = analyze_command(body, _depth + 1)
+                flagged.extend(f"inside substitution: {f}" for f in inner.flagged)
 
     # Newlines separate statements just like `;` for segmentation purposes.
     normalized = command.replace("\r\n", "\n").replace("\n", " ; ")
@@ -107,8 +128,15 @@ def analyze_command(command: str) -> CommandAnalysis:
         tokens = list(lex)
     except ValueError:
         flagged.append("unparseable quoting (unbalanced quote?)")
+        # Fail closed: this early return used to leave `hard_flagged` empty, so
+        # a command the analyser could not parse resolved to "allow" -- the one
+        # case where knowing nothing was treated as knowing it was safe.
         return CommandAnalysis(
-            heads=(), flagged=tuple(flagged), readonly=False, backgrounded=backgrounded
+            heads=(),
+            flagged=tuple(flagged),
+            readonly=False,
+            backgrounded=backgrounded,
+            hard_flagged=tuple(f for f in flagged if is_hard_flag(f)),
         )
 
     segments: list[list[str]] = []
@@ -153,7 +181,48 @@ def analyze_command(command: str) -> CommandAnalysis:
         flagged=tuple(flagged),
         readonly=readonly,
         backgrounded=backgrounded,
+        hard_flagged=tuple(f for f in flagged if is_hard_flag(f)),
     )
+
+def _substitution_bodies(command: str) -> list[str]:
+    """Inner text of every `$(...)`, `<(...)`, `>(...)` and backtick span.
+
+    Segment analysis only ever saw the *outer* command, so `echo $(sudo rm -rf
+    /etc)` was read as a plain `echo`. The bodies are handed back here to be
+    analysed on their own.
+    """
+    bodies: list[str] = []
+
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "`":
+            end = command.find("`", i + 1)
+            if end == -1:
+                break
+            bodies.append(command[i + 1 : end])
+            i = end + 1
+            continue
+        if ch in "$<>" and i + 1 < n and command[i + 1] == "(":
+            depth = 0
+            j = i + 1
+            while j < n:
+                if command[j] == "(":
+                    depth += 1
+                elif command[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if depth != 0:
+                break  # unbalanced; the shlex pass flags this separately
+            bodies.append(command[i + 2 : j])
+            i = j + 1
+            continue
+        i += 1
+    return bodies
+
 
 def _head_and_args(words: list[str]) -> tuple[str | None, list[str]]:
     idx = 0
@@ -167,6 +236,33 @@ def _head_and_args(words: list[str]) -> tuple[str | None, list[str]]:
 
 def _basename(word: str) -> str:
     return word.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+_SUBSTITUTION_FLAG_PREFIX = "inside substitution: "
+
+
+def is_hard_flag(flag: str) -> bool:
+    """Flags an unattended run must refuse rather than auto-approve.
+
+    A hard flag stays hard however deeply it is nested: `$(sudo ...)` is exactly
+    as privileged as a bare `sudo`.
+    """
+    while flag.startswith(_SUBSTITUTION_FLAG_PREFIX):
+        flag = flag[len(_SUBSTITUTION_FLAG_PREFIX) :]
+    return flag.startswith(_HARD_FLAG_PREFIXES)
+
+
+# Kept next to the strings they match so the two cannot drift apart.
+_HARD_FLAG_PREFIXES = (
+    "privileged or destructive command:",
+    "pipeline into shell interpreter:",
+    "git push --force",
+    # A safety analysis that could not run is not a safe command. Without this
+    # an unbalanced quote takes the early return below, leaves `hard_flagged`
+    # empty, and a command nothing understood resolves to "allow".
+    "unparseable quoting",
+    "unanalysable substitution",
+)
+
 
 def _segment_flags(head: str, args: list[str], separator: str) -> list[str]:
     flags: list[str] = []

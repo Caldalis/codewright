@@ -72,6 +72,8 @@ class Session:
         agent_control: AgentControl | None = None,
         role: str = "default",
         extra_test_commands: list[str] | None = None,
+        max_steps: int | None = None,
+        distill: bool = True,
     ) -> None:
         from codewright.agent.submission_loop import submission_loop
 
@@ -80,14 +82,15 @@ class Session:
         self.permission_profile = permission_profile
         self.model = model
         self.approval_policy = approval_policy
-
+        self.max_steps = max_steps
+        self._distill_enabled = distill
+        self.auto_approved = 0
         self._llm = llm
         self._context_manager = context_manager
         self._prompt_builder = prompt_builder
         self._workspace = workspace
         self._summarizer = summarizer
         self._rollout = rollout
-
         self._mcp: Any | None = None
 
 
@@ -284,6 +287,8 @@ class Session:
 
     @property
     def distillation(self) -> DistillationCoordinator | None:
+        if not self._distill_enabled:
+            return None
         if not self._agent_path.is_root() or self._workspace is None:
             return None
         if self._distillation is None:

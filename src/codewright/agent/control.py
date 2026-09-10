@@ -107,6 +107,7 @@ class AgentControl:
             agent_path=path,
             agent_control=self,
             role=clean_role,
+            max_steps=self._root.max_steps,
         )
         entry = _AgentEntry(
             info=AgentInfo(path=path, role=clean_role, task_name=clean_task),

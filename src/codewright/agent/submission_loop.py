@@ -33,6 +33,10 @@ async def submission_loop(session: Session) -> None:
                 EvError(message=f"submission_loop error on {type(sub.op).__name__}: {exc}"),
                 sub.id,
             )
+            if isinstance(sub.op, OpUserTurn):
+                await session.emit_event(
+                    EvTurnAborted(turn_id=sub.id, reason="error"), sub.id
+                )
             should_exit = False
         if should_exit:
             break
@@ -125,6 +129,7 @@ async def _drive_user_turn(session: Session, sub: Submission, op: OpUserTurn) ->
         max_context_tokens=context_manager.max_context_tokens,
         compact_threshold=context_manager.compact_threshold,
         role=session.role,
+        max_steps=session.max_steps,
     )
 
     try:

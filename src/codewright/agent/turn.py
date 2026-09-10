@@ -58,11 +58,29 @@ async def run_turn(
     if distill is not None and pending_user_input:
         distill.note_user(pending_user_input)
     compacted_this_turn = False
+    steps = 0
 
     while True:
         if turn_context.cancellation_token.is_cancelled():
             await _emit_turn_interrupted(session, turn_context, sub_id)
             return None
+
+        if turn_context.max_steps is not None and steps >= turn_context.max_steps:
+            await session.emit_event(
+                EvError(
+                    message=(
+                        f"step budget exhausted after {steps} model round-trips "
+                        f"(max_steps={turn_context.max_steps}); aborting turn"
+                    )
+                ),
+                sub_id,
+            )
+            await session.emit_event(
+                EvTurnAborted(turn_id=turn_context.turn_id, reason="error"),
+                sub_id,
+            )
+            return last_message_text
+        steps += 1
 
         if not compacted_this_turn and session.context.should_compact():
             tokens_before = session.context.total_tokens()

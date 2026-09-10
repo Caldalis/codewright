@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from codewright.protocol import PendingAction, PermissionProfile, ReviewDecision
+from codewright.protocol import (
+    AskForApproval,
+    PendingAction,
+    PermissionProfile,
+    ReviewDecision,
+)
 from codewright.workspace.permissions import action_signature, assess_action
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -83,7 +88,11 @@ class WorkspaceManager:
         self,
         action: PendingAction,
         session: Session,
+        *,
+        approval_policy: AskForApproval | None = None,
     ) -> ReviewDecision:
+
+        policy = approval_policy or session.approval_policy
         cwd = Path(action.details.get("cwd") or self._root)
         verdict = assess_action(
             self._profile,
@@ -91,11 +100,29 @@ class WorkspaceManager:
             self._session_approvals,
             cwd,
             self._root,
+            policy,
         )
-        if verdict == "auto_allow":
-            return ReviewDecision.APPROVED
-        if verdict == "auto_deny":
-            return ReviewDecision.DENIED
+
+        if verdict in ("auto_allow", "auto_deny"):
+            decision = (
+                ReviewDecision.APPROVED
+                if verdict == "auto_allow"
+                else ReviewDecision.DENIED
+            )
+            if policy is AskForApproval.NEVER:
+                if verdict == "auto_allow":
+                    session.auto_approved += 1
+                self.audit(
+                    {
+                        "event": "auto_resolved",
+                        "policy": policy.value,
+                        "verdict": verdict,
+                        "kind": action.kind,
+                        "summary": action.summary,
+                    }
+                )
+            return decision
+
         decision = await session.request_approval(action)
         if decision == ReviewDecision.APPROVED_FOR_SESSION:
             self._session_approvals.add(action_signature(action))

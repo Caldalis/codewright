@@ -134,7 +134,11 @@ class ApplyPatchHandler(ToolHandler):
                 "cwd": str(invocation.turn_context.cwd),
             },
         )
-        decision = await workspace.check_action(action, invocation.session)
+        decision = await workspace.check_action(
+            action,
+            invocation.session,
+            approval_policy=invocation.turn_context.approval_policy,
+        )
         if decision == ReviewDecision.DENIED:
             raise RespondToModelError(
                 f"apply_patch denied by user/policy: {action.summary}"

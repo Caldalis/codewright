@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from codewright.llm.base import CanonicalMessage
+from codewright.protocol import AskForApproval
 
 if TYPE_CHECKING:
     from codewright.agent.turn_context import TurnContext
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 _PROMPTS_DIR = Path(__file__).resolve().parent
 _DEFAULT_SYSTEM_PROMPT_PATH = _PROMPTS_DIR / "system.md"
 _APPLY_PATCH_INSTRUCTIONS_PATH = _PROMPTS_DIR / "apply_patch_tool_instructions.md"
+_UNATTENDED_MODE_PATH = _PROMPTS_DIR / "unattended.md"
 _ROLES_DIR = _PROMPTS_DIR / "roles"
 
 
@@ -26,6 +28,12 @@ def load_apply_patch_instructions() -> str:
     if not _APPLY_PATCH_INSTRUCTIONS_PATH.exists():
         return ""
     return _APPLY_PATCH_INSTRUCTIONS_PATH.read_text(encoding="utf-8")
+
+
+def load_unattended_mode_block() -> str:
+    if not _UNATTENDED_MODE_PATH.exists():
+        return ""
+    return _UNATTENDED_MODE_PATH.read_text(encoding="utf-8").strip()
 
 
 def _read_role_snippet(role: str) -> str:
@@ -55,6 +63,11 @@ def _render_developer_layer(
         f"role: {turn_context.role}\n"
         "</turn_settings>"
     )
+
+    if turn_context.approval_policy is AskForApproval.NEVER:
+        block = load_unattended_mode_block()
+        if block:
+            parts.append(f"<unattended_mode>\n{block}\n</unattended_mode>")
 
     apply_patch_help = load_apply_patch_instructions()
     if apply_patch_help.strip():

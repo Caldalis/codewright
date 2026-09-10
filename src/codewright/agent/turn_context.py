@@ -18,3 +18,4 @@ class TurnContext:
     max_context_tokens: int = 128_000
     compact_threshold: float = 0.9
     role: str = "default"
+    max_steps: int | None = None

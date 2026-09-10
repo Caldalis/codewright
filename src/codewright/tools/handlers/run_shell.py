@@ -98,11 +98,19 @@ class RunShellHandler(ToolHandler):
             summary=" ".join(shlex.quote(c) for c in params.command),
             details={
                 "command": list(params.command),
+                # run_shell takes an argv list, so there is no shell string to
+                # segment-analyse and no `$(...)` to hide. The workspace
+                # boundary is enforced via `cwd`.
+                "hard_flagged": [],
                 "cwd": str(cwd),
                 "timeout_ms": params.timeout_ms,
             },
         )
-        decision = await workspace.check_action(action, invocation.session)
+        decision = await workspace.check_action(
+            action,
+            invocation.session,
+            approval_policy=invocation.turn_context.approval_policy,
+        )
         if decision == ReviewDecision.DENIED:
             raise RespondToModelError(
                 f"run_shell denied by user/policy: {action.summary}"
