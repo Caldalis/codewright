@@ -134,11 +134,27 @@ worth more than the headline number, because it says what to fix next:
 | `no_patch` | agent finished without editing anything |
 | `step_budget_exhausted` | hit `--max-steps` — raise it, or the agent is looping |
 | `agent_timeout` | hit the wall clock |
-| `agent_error` | turn aborted on an error |
-| `infra_error` | container/harness problem — must be ~0, or the score is noise |
+| `agent_error` | turn aborted on an error the model caused |
+| `infra_error` | gateway/container/harness failure that survived `--retries` — must be ~0, or the score is noise |
 
 `infra_error` and `agent_timeout` measure the harness, not the agent. If they are
 not near zero, fix them before quoting any number.
+
+### Retries
+
+codewright does not retry LLM calls: one bad chunk from the provider ends the
+turn. Observed against this gateway:
+
+    provider error 102503: passthrough stream idle timeout after 120s
+    waiting for next chunk
+
+That is not the model failing the task, so `run_agent.py` re-runs the instance in
+a fresh container — `--retries 2` by default. It retries **only** gateway,
+transport and docker failures; a model that ran and did not solve the instance is
+never retried, because retrying that is what turns pass@1 into best-of-N. The
+matched patterns are `_INFRA_ERROR_MARKERS`, and every retry is kept in the
+record's `infra_retries` and reported, so a run that fought the gateway all night
+cannot later read as a clean one.
 
 ## Known limits of these numbers
 

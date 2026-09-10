@@ -99,6 +99,34 @@ def load_instances(
     return rows
 
 
+# Failures that mean the attempt never got a fair chance -- the gateway, the
+# transport, or docker gave out. Retrying those is honest. Nothing here matches
+# a model outcome: an agent that simply could not solve the instance must never
+# be retried, or the score stops being pass@1.
+_INFRA_ERROR_MARKERS = (
+    "provider error",
+    "http error:",
+    "stream idle timeout",
+    "connection",
+    "timed out",
+    "temporarily unavailable",
+    "bad gateway",
+    "service unavailable",
+)
+
+
+def _infra_failure(record: dict) -> str | None:
+    """The infrastructure error that killed this attempt, or None if it ran."""
+    if record.get("status") in ("container_error", "harness_error"):
+        return record.get("error") or str(record.get("status"))
+    agent = record.get("agent") or {}
+    if agent.get("status") == "error":
+        for err in agent.get("errors") or []:
+            if any(m in err.lower() for m in _INFRA_ERROR_MARKERS):
+                return err
+    return None
+
+
 def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -> dict:
     iid = instance["instance_id"]
     result_path = out_dir / "instances" / f"{iid}.json"
@@ -110,6 +138,41 @@ def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -
             # than letting the exception escape and take the sweep with it.
             pass
 
+    seen: list[str] = []
+    total_wall = 0.0
+    for attempt in range(1, args.retries + 2):
+        record = _attempt(instance, args)
+        total_wall += record.get("wall_s", 0.0)
+        infra = _infra_failure(record)
+        if infra is None:
+            break
+        seen.append(f"attempt {attempt}: {infra[:300]}")
+        if attempt <= args.retries:
+            # Each attempt gets a fresh container; this one may hold half-applied
+            # edits, and diffing those would grade a state the agent abandoned.
+            time.sleep(min(30, 5 * attempt))
+
+    record["attempts"] = attempt
+    record["wall_s"] = round(total_wall, 1)
+    if seen:
+        # Kept even when a later attempt succeeded, so a run that fought the
+        # gateway all night does not read afterwards as a clean one.
+        record["infra_retries"] = seen
+    if _infra_failure(record) is not None:
+        # Out of retries. Name it infra_error rather than leaving it as
+        # agent_error, which the report counts against the model.
+        record["status"] = "infra_error"
+
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = result_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2))
+    tmp.replace(result_path)  # atomic: a killed sweep never leaves half a file
+    return record
+
+
+def _attempt(instance: dict[str, Any], args: argparse.Namespace) -> dict:
+    """One container, one agent run. Never touches disk -- run_one owns that."""
+    iid = instance["instance_id"]
     record: dict[str, Any] = {
         "instance_id": iid,
         "status": "unknown",
@@ -241,10 +304,6 @@ def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -
         if container_started:
             sh(["docker", "rm", "-f", cid], timeout=120)
         record["wall_s"] = round(time.monotonic() - started, 1)
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = result_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2))
-        tmp.replace(result_path)  # atomic: a killed sweep never leaves half a file
 
     return record
 
@@ -263,6 +322,9 @@ def main() -> None:
     ap.add_argument("--base-url", default=None, help="sets CODEWRIGHT_BASE_URL in the container")
     ap.add_argument("--max-steps", type=int, default=60)
     ap.add_argument("--timeout", type=int, default=1800, help="per-instance wall clock, seconds")
+    ap.add_argument("--retries", type=int, default=2, metavar="N",
+                    help="re-run an instance up to N times, but only when the gateway "
+                         "or docker failed -- never on a model miss")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--platform", default="linux/amd64",
                 help="instance images are x86_64; overriding this is rarely right")
@@ -290,6 +352,7 @@ def main() -> None:
         "instances_pinned": args.instance,
         "model": os.environ["CODEWRIGHT_MODEL"], "base_url": os.environ.get("CODEWRIGHT_BASE_URL"),
         "max_steps": args.max_steps, "timeout_s": args.timeout,
+        "retries": args.retries,
         "platform": args.platform,
         "codewright_commit": sh(
             ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"]

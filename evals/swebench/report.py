@@ -37,7 +37,7 @@ def bucket(rec: dict, resolved: set[str]) -> str:
     status = rec.get("status")
     if status == "agent_timeout":
         return "agent_timeout"
-    if status in ("container_error", "harness_error"):
+    if status in ("container_error", "harness_error", "infra_error"):
         return "infra_error"
     agent = rec.get("agent") or {}
     # Checked *before* no_patch: exhausting the budget usually ends with no diff,
@@ -72,6 +72,12 @@ def main() -> None:
         b = bucket(rec, resolved)
         buckets[b] = buckets.get(b, 0) + 1
 
+    # An instance that only passed on a retry is still a pass, but a run that
+    # needed many of them was fighting the gateway, and that belongs in the
+    # writeup next to the score.
+    retried = sum(1 for r in records if r.get("infra_retries"))
+    retry_events = sum(len(r.get("infra_retries") or []) for r in records)
+
     agents = [r.get("agent") or {} for r in records]
     tok_in = sum(a.get("input_tokens", 0) for a in agents)
     tok_out = sum(a.get("output_tokens", 0) for a in agents)
@@ -101,6 +107,9 @@ def main() -> None:
     print(f"  tokens   in={tok_in:,}  out={tok_out:,}   avg/instance={(tok_in + tok_out) // max(n, 1):,}")
     print(f"  wall     {wall / 3600:.1f} h total,  {wall / max(n, 1) / 60:.1f} min/instance avg")
     print(f"  full-auto approvals granted: {auto_approved}")
+    if retried:
+        print(f"  infra retries: {retry_events} across {retried} instance(s) "
+              f"({pct(retried, n):.1f}% hit a gateway/docker failure at least once)")
     print("=" * 66)
     print()
     print("  Report it as:")
@@ -113,6 +122,7 @@ def main() -> None:
         "config": cfg, "n": n, "resolved": k, "resolve_rate": k / n if n else 0,
         "ci95": [lo, hi], "buckets": buckets,
         "input_tokens": tok_in, "output_tokens": tok_out, "wall_s": wall,
+        "instances_retried": retried, "retry_events": retry_events,
     }, indent=2))
 
 
