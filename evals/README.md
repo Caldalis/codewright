@@ -111,6 +111,22 @@ so it costs no extra download.
 *slower* than one stream, since the layers just split the same pipe. If pulls
 crawl, check for another download competing before blaming the registry.
 
+### Pulling is memory-bound too
+
+Docker extracts layers inside its VM, and that VM's memory is the host's. A
+400 MB compressed layer expands to well over a GB, and the default
+`max-concurrent-downloads: 3` stacks several of those at once — enough for the
+OS to kill the pull outright on a 16 GB machine. Since concurrent downloads are
+also *slower* here, there is no reason not to serialize:
+
+```json
+// ~/.docker/daemon.json  (restart Docker after editing)
+{ "max-concurrent-downloads": 1 }
+```
+
+Pull one image at a time, and check free memory before each one rather than
+trusting a long unattended loop to survive.
+
 ### Finish the pulls before starting the sweep
 
 Not an optimization — a correctness requirement. The same instance, run twice:
