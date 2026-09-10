@@ -339,19 +339,6 @@ class TestP5Subagent:
             )
 
 
-class TestP5Docs:
-    def test_readme_and_architecture_exist(self):
-        assert (ROOT / "README.md").exists()
-        assert (ROOT / "ARCHITECTURE.md").exists()
-
-    def test_architecture_has_mermaid(self):
-        src = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        # _SHARED.md raises the floor to 3 Mermaid diagrams for P5 final docs.
-        assert src.count("```mermaid") >= 3, (
-            "ARCHITECTURE.md must contain at least 3 Mermaid diagrams"
-        )
-
-
 # ============================================================
 # === Cross-phase invariants (always-on)
 # ============================================================

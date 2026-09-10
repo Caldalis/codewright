@@ -433,7 +433,7 @@ async def test_apply_patch_move_target_is_in_approval_paths(
         source.write_text("before\n", encoding="utf-8")
         captured: dict[str, list[str]] = {}
 
-        async def check_action(action, _session):
+        async def check_action(action, _session, **_kwargs):
             captured["paths"] = action.details["paths"]
             return ReviewDecision.APPROVED
 

@@ -37,4 +37,6 @@ Thumbs.db
 tmp/
 /tmp/cw_test/
 
-
+# eval artifacts: runtime tarball (~44MB) and per-run rollout output
+evals/_runtime/
+evals/runs/
