@@ -154,6 +154,17 @@ def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -
             record["error"] = f"untar failed: {untar.stderr.strip()[:500]}"
             return record
 
+        # Instance images ship build artifacts that git never tracked -- requests
+        # carries a whole build/lib/ tree, 68 files. `git add -A` after the run
+        # cannot tell those from files the agent created, stages them as new,
+        # and the resulting patch fails to apply in the grading container where
+        # they already exist ("already exists in working directory"). Every
+        # instance would then read as a model miss. Snapshot them first.
+        git = ["docker", "exec", cid, "git", "-c", "safe.directory=*", "-C", "/testbed"]
+        pre = sh(git + ["ls-files", "--others", "--exclude-standard"], timeout=120)
+        pre_untracked = set(pre.stdout.split("\n")) if pre.returncode == 0 else set()
+        pre_untracked.discard("")
+
         prompt = PROMPT.format(problem_statement=instance["problem_statement"])
         agent_cmd = [
             "docker", "exec", cid,
@@ -196,22 +207,25 @@ def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -
         # tool call, and `git add -A` below would stage it. Remove it first so
         # nothing we added can reach a graded patch.
         sh(["docker", "exec", cid, "rm", "-rf", "/testbed/.codewright"])
-        # `safe.directory` because git refuses to touch a tree whose owner is not
-        # the calling uid ("detected dubious ownership"). When that fires, git
-        # stops treating /testbed as a repo at all and falls back to --no-index,
-        # where `--cached` is not even a valid option -- so a correct fix comes
-        # back as an empty patch and scores as no_patch. Silent, and total.
-        git = ["docker", "exec", cid, "git", "-c", "safe.directory=*", "-C", "/testbed"]
-        # Stage before diffing: plain `git diff` omits untracked files, so any
-        # fix that adds a source file would score as no_patch. `--cached` after
-        # `add -A` is what the SWE-bench reference implementations do.
-        add = sh(git + ["add", "-A"], timeout=120)
+        # Stage tracked edits and deletions...
+        add = sh(git + ["add", "-u"], timeout=120)
+        # ...then only the untracked files that were not already there before the
+        # run. Plain `git diff` would omit new files entirely, so a fix that adds
+        # a module would read as no_patch; `add -A` would sweep in the image's
+        # own build artifacts. This is the narrow set that is actually ours.
+        post = sh(git + ["ls-files", "--others", "--exclude-standard"], timeout=120)
+        created = sorted(set(post.stdout.split("\n")) - pre_untracked - {""})
+        record["files_created"] = created
+        add_new = None
+        if created:
+            add_new = sh(git + ["add", "--"] + created, timeout=120)
         diff = sh(git + ["diff", "--cached"], timeout=120)
         record["patch"] = diff.stdout if diff.returncode == 0 else ""
-        if add.returncode != 0 or diff.returncode != 0:
+        failures = [r for r in (add, post, add_new, diff) if r is not None and r.returncode != 0]
+        if failures:
             # Distinguish "the agent changed nothing" from "we failed to read
             # what it changed". Both look like no_patch in the bucket table.
-            record["git_error"] = (add.stderr or diff.stderr).strip()[:500]
+            record["git_error"] = (failures[0].stderr or "").strip()[:500]
 
         if record["status"] == "agent_timeout":
             pass
