@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING
 
 from codewright.agent.turn_context import TurnContext
 from codewright.context.compact import compact_history
-from codewright.llm.base import CanonicalMessage, ContentBlock, ToolCallBlock
+from codewright.llm.base import (
+    CanonicalMessage,
+    ContentBlock,
+    TokenUsage,
+    ToolCallBlock,
+)
 from codewright.persistence.rollout import RolloutLine
 from codewright.protocol import (
     EvAgentMessage,
@@ -140,6 +145,13 @@ async def run_turn(
         message_text = ""
         tool_calls: list[ToolCallBlock] = []
         stream_error: str | None = None
+        # Usage is a running total for THIS call, not an increment. Providers
+        # disagree on how often they send it: one emits a single frame at the
+        # end, another repeats the same figures on all 49 chunks. Emitting per
+        # frame makes a consumer that adds them up report the prompt 49 times
+        # over -- 7.9M "input tokens" for a task that used 300. Keep the last
+        # one and emit it once the call is done.
+        last_usage: TokenUsage | None = None
         try:
             stream_iter = await _maybe_await(
                 stream, turn_context.cancellation_token
@@ -158,20 +170,24 @@ async def run_turn(
                 elif ev.kind == "tool_call_completed" and ev.tool_call is not None:
                     tool_calls.append(ev.tool_call)
                 elif ev.kind == "usage" and ev.usage is not None:
-                    await session.emit_event(
-                        EvTokenCount(
-                            input=ev.usage.input,
-                            output=ev.usage.output,
-                            total=ev.usage.total,
-                        ),
-                        sub_id,
-                    )
+                    last_usage = ev.usage
                 elif ev.kind == "error":
                     stream_error = ev.error or "unknown provider error"
                     break
         except _TurnInterrupted:
             await _emit_turn_interrupted(session, turn_context, sub_id)
             return None
+
+        # One event per model call, so counting the events counts the calls.
+        if last_usage is not None:
+            await session.emit_event(
+                EvTokenCount(
+                    input=last_usage.input,
+                    output=last_usage.output,
+                    total=last_usage.total,
+                ),
+                sub_id,
+            )
 
         if stream_error is not None:
             await session.emit_event(EvError(message=stream_error), sub_id)

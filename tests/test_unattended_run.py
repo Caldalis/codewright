@@ -328,6 +328,68 @@ async def test_outcome_accumulates_tokens_and_tool_calls():
     assert outcome.final_text == "done"
 
 
+# ------------------------------------------------------------- usage accounting
+
+
+class _ChunkedUsageProvider(LLMProvider):
+    """Repeats a running usage total on every chunk, then stops.
+
+    Real providers disagree here. One sends a single usage frame at the end of
+    the stream; another repeats the same prompt_tokens on all 49 chunks with
+    completion_tokens climbing. Both are the same call.
+    """
+
+    def __init__(self, frames: int = 5) -> None:
+        self.frames = frames
+        self.calls = 0
+
+    async def stream(  # type: ignore[override]
+        self,
+        messages: list[CanonicalMessage],
+        tools: list,
+        turn_context,
+    ) -> AsyncIterator[StreamEvent]:
+        del messages, tools, turn_context
+        self.calls += 1
+        frames = self.frames
+
+        async def _gen() -> AsyncIterator[StreamEvent]:
+            for i in range(1, frames + 1):
+                yield StreamEvent(kind="text_delta", text="x")
+                # input stays flat, output climbs: a running total, not a delta.
+                yield StreamEvent(
+                    kind="usage",
+                    usage=TokenUsage(input=300, output=i * 10, total=300 + i * 10),
+                )
+
+        return _gen()
+
+
+@pytest.mark.asyncio
+async def test_repeated_usage_frames_are_one_call_not_many():
+    """Summing usage frames would bill the prompt once per chunk.
+
+    Measured against a real gateway: 49 chunks each carrying the same
+    prompt_tokens=295 turned a 300-token call into 7.9M reported input tokens,
+    and 667 reported model calls for a 96-second run. The last frame is the
+    answer; the ones before it are prefixes of it.
+    """
+    provider = _ChunkedUsageProvider(frames=5)
+    session = _make_session(provider)
+    try:
+        outcome = await asyncio.wait_for(
+            _drive(session, "go", auto_approve=True), timeout=30
+        )
+    finally:
+        await session.shutdown()
+
+    assert provider.calls == 1
+    assert outcome.model_calls == 1, "5 usage frames are one model call"
+    assert outcome.input_tokens == 300, "the prompt is billed once, not 5 times"
+    assert outcome.output_tokens == 50, "the last running total, not their sum"
+    assert outcome.billed_tokens == 350
+
+
 # --------------------------------------------------------------- distillation
 
 
