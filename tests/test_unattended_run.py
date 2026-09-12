@@ -328,6 +328,177 @@ async def test_outcome_accumulates_tokens_and_tool_calls():
     assert outcome.final_text == "done"
 
 
+# ---------------------------------------------------------- provider extras
+
+
+class _ReasoningProvider(LLMProvider):
+    """Streams a trace, asks for one tool call, then answers.
+
+    Stands in for a thinking model: the trace arrives under the provider's own
+    key, and the provider expects it back on the assistant message that carried
+    the tool call.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen: list[list[CanonicalMessage]] = []
+
+    async def stream(  # type: ignore[override]
+        self,
+        messages: list[CanonicalMessage],
+        tools: list,
+        turn_context,
+    ) -> AsyncIterator[StreamEvent]:
+        del tools, turn_context
+        self.calls += 1
+        self.seen.append(list(messages))
+        first = self.calls == 1
+
+        async def _gen() -> AsyncIterator[StreamEvent]:
+            yield StreamEvent(kind="text_delta", text="working")
+            if first:
+                yield StreamEvent(
+                    kind="tool_call_completed",
+                    tool_call=ToolCallBlock(
+                        call_id="c1", tool_name="read_file",
+                        arguments_json='{"path": "a.py"}',
+                    ),
+                )
+            yield StreamEvent(
+                kind="message_completed",
+                provider_extras={"reasoning_content": "I will read the file."},
+            )
+
+        return _gen()
+
+
+@pytest.mark.asyncio
+async def test_provider_trace_is_kept_on_the_tool_call_message():
+    """The message shape a strict provider rejects when the trace is missing."""
+    provider = _ReasoningProvider()
+    session = _make_session(provider)
+    try:
+        await asyncio.wait_for(_drive(session, "go", auto_approve=True), timeout=30)
+    finally:
+        await session.shutdown()
+
+    assert provider.calls >= 2, "the tool call should have produced a second call"
+    followup = provider.seen[1]
+    carrying = [
+        m for m in followup if m.role == "assistant" and m.tool_calls
+    ]
+    assert carrying, "the assistant turn with tool_calls must reach the next request"
+    assert carrying[0].provider_extras == {
+        "reasoning_content": "I will read the file."
+    }
+
+
+class _SilentProvider(LLMProvider):
+    """Asks for one tool call and never sends a trace."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen: list[list[CanonicalMessage]] = []
+
+    async def stream(  # type: ignore[override]
+        self,
+        messages: list[CanonicalMessage],
+        tools: list,
+        turn_context,
+    ) -> AsyncIterator[StreamEvent]:
+        del tools, turn_context
+        self.calls += 1
+        self.seen.append(list(messages))
+        first = self.calls == 1
+
+        async def _gen() -> AsyncIterator[StreamEvent]:
+            yield StreamEvent(kind="text_delta", text="working")
+            if first:
+                yield StreamEvent(
+                    kind="tool_call_completed",
+                    tool_call=ToolCallBlock(
+                        call_id="c1", tool_name="read_file",
+                        arguments_json='{"path": "a.py"}',
+                    ),
+                )
+            yield StreamEvent(kind="message_completed")
+
+        return _gen()
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_attached_when_the_provider_sends_nothing():
+    """A provider that never sends a trace must not acquire one: OpenAI rejects
+    unknown keys on a message."""
+    provider = _SilentProvider()
+    session = _make_session(provider)
+    try:
+        await asyncio.wait_for(_drive(session, "go", auto_approve=True), timeout=30)
+    finally:
+        await session.shutdown()
+
+    assert provider.calls >= 2, "the tool call should have produced a second call"
+    followup = provider.seen[1]
+    assert any(m.role == "assistant" and m.tool_calls for m in followup), (
+        "the assistant turn with tool_calls must reach the next request"
+    )
+    assert all(m.provider_extras is None for m in followup)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_session_still_has_the_provider_trace():
+    """`resume` replays history from the rollout. If the trace is not persisted
+    there, the first request after a resume is the one a strict provider
+    refuses: an assistant message bearing tool_calls with no trace."""
+    session = _make_session(_SilentProvider())
+
+    class _Line:
+        def __init__(self, type: str, payload: dict) -> None:
+            self.type = type
+            self.payload = payload
+
+    session.replay([
+        _Line("user_msg", {"content": "go"}),
+        _Line("assistant_msg", {
+            "content": "",
+            "provider_extras": {"reasoning_content": "I will read the file."},
+            "tool_calls": [{"call_id": "c1", "tool_name": "read_file",
+                            "arguments_json": "{}"}],
+        }),
+        _Line("tool_result", {"call_id": "c1", "content": "a.py"}),
+    ])
+
+    try:
+        restored = [
+            m for m in session.context.snapshot()
+            if m.role == "assistant" and m.tool_calls
+        ]
+        assert restored, "the assistant turn should have been replayed"
+        assert restored[0].provider_extras == {
+            "reasoning_content": "I will read the file."
+        }
+    finally:
+        await session.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_rollout_without_a_trace_replays_without_inventing_one():
+    session = _make_session(_SilentProvider())
+
+    class _Line:
+        def __init__(self, type: str, payload: dict) -> None:
+            self.type = type
+            self.payload = payload
+
+    session.replay([
+        _Line("assistant_msg", {"content": "hi"}),
+    ])
+    try:
+        assert all(m.provider_extras is None for m in session.context.snapshot())
+    finally:
+        await session.shutdown()
+
+
 # ------------------------------------------------------------- usage accounting
 
 

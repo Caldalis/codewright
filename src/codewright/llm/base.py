@@ -33,6 +33,17 @@ class CanonicalMessage:
     tool_call_id: str | None = None
     tool_calls: tuple[ToolCallBlock, ...] | None = None
 
+    # Fields a provider put on its own assistant message that the OpenAI chat
+    # schema has no place for -- a thinking model's trace, for one. Some
+    # providers reject the next request if an assistant message carrying
+    # tool_calls comes back without the trace they attached to it.
+    #
+    # Held verbatim, under the provider's own key, because the key is not
+    # standard either: reasoning_content, reasoning and thinking are all in use,
+    # and a provider only accepts the spelling it issued. We do not read these
+    # values, only carry them, so nothing here needs to understand a format.
+    provider_extras: dict[str, Any] | None = None
+
 
 @dataclass(frozen=True)
 class TokenUsage:
@@ -63,6 +74,10 @@ class StreamEvent:
     error: str | None = None
 
     tool_call_index: int | None = None
+
+    # Set on "message_completed": what the provider attached to this message,
+    # assembled from its deltas. See CanonicalMessage.provider_extras.
+    provider_extras: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from codewright.agent.turn_context import TurnContext
 from codewright.context.compact import compact_history
@@ -152,6 +152,11 @@ async def run_turn(
         # over -- 7.9M "input tokens" for a task that used 300. Keep the last
         # one and emit it once the call is done.
         last_usage: TokenUsage | None = None
+        # Whatever the provider attached to this message under its own keys.
+        # Carried back onto the history entry so the next request can return it:
+        # some providers reject an assistant message bearing tool_calls if the
+        # trace they issued with it does not come back.
+        provider_extras: dict[str, Any] | None = None
         try:
             stream_iter = await _maybe_await(
                 stream, turn_context.cancellation_token
@@ -171,6 +176,8 @@ async def run_turn(
                     tool_calls.append(ev.tool_call)
                 elif ev.kind == "usage" and ev.usage is not None:
                     last_usage = ev.usage
+                elif ev.kind == "message_completed" and ev.provider_extras:
+                    provider_extras = dict(ev.provider_extras)
                 elif ev.kind == "error":
                     stream_error = ev.error or "unknown provider error"
                     break
@@ -204,11 +211,19 @@ async def run_turn(
         if not tool_calls:
             if message_text:
                 session.context.append(
-                    CanonicalMessage(role="assistant", content=message_text)
+                    CanonicalMessage(
+                        role="assistant",
+                        content=message_text,
+                        provider_extras=provider_extras,
+                    )
                 )
                 await session.record_rollout(
                     RolloutLine(
-                        type="assistant_msg", payload={"content": message_text}
+                        type="assistant_msg",
+                        payload={
+                            "content": message_text,
+                            "provider_extras": provider_extras,
+                        },
                     )
                 )
             await session.emit_event(
@@ -224,6 +239,7 @@ async def run_turn(
             role="assistant",
             content=(ContentBlock(text=message_text or None),),
             tool_calls=tuple(tool_calls),
+            provider_extras=provider_extras,
         )
         session.context.append(assistant_with_calls)
         await session.record_rollout(
@@ -231,6 +247,11 @@ async def run_turn(
                 type="assistant_msg",
                 payload={
                     "content": message_text,
+                    # Persisted so a resumed session can hand it back. Without
+                    # it, `resume` sends an assistant message bearing tool_calls
+                    # and no trace -- the exact request a strict provider
+                    # refuses.
+                    "provider_extras": provider_extras,
                     "tool_calls": [
                         {
                             "call_id": tc.call_id,

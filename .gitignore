@@ -40,3 +40,4 @@ tmp/
 # eval artifacts: runtime tarball (~44MB) and per-run rollout output
 evals/_runtime/
 evals/runs/
+logs/

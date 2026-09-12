@@ -424,6 +424,10 @@ class Session:
             elif kind == "assistant_msg":
                 content = payload.get("content") or ""
                 tool_calls_raw = payload.get("tool_calls") or []
+                # Restored, or a resumed session replays an assistant message
+                # bearing tool_calls without the trace the provider issued with
+                # it -- which is what some providers reject.
+                extras = payload.get("provider_extras") or None
                 if tool_calls_raw:
                     tool_calls = tuple(
                         ToolCallBlock(
@@ -438,11 +442,16 @@ class Session:
                             role="assistant",
                             content=content,
                             tool_calls=tool_calls,
+                            provider_extras=extras,
                         )
                     )
                 else:
                     self.context.append(
-                        CanonicalMessage(role="assistant", content=content)
+                        CanonicalMessage(
+                            role="assistant",
+                            content=content,
+                            provider_extras=extras,
+                        )
                     )
             elif kind == "tool_result":
                 self.context.append(

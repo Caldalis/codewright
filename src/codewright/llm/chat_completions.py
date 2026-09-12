@@ -27,6 +27,22 @@ def _content_to_str(content: str | tuple[ContentBlock, ...]) -> str:
     return "".join(parts)
 
 
+# Keys a provider may add to its own assistant message, which it then expects
+# back. An allow-list rather than "everything we do not recognise": a delta also
+# carries role, refusal and provider bookkeeping, and echoing those back is a
+# good way to get a request rejected for a new reason.
+#
+# The spellings differ by provider and a provider only accepts the one it
+# issued, so each is carried under its own name. Extend this when a provider
+# turns up using another.
+_PASSTHROUGH_KEYS = (
+    "reasoning_content",   # DeepSeek, GLM, Kimi, Grok, Doubao
+    "reasoning",           # some OpenAI-compatible gateways
+    "thinking",            # seen in streaming deltas
+    "encrypted_content",   # Doubao, alongside reasoning_content
+)
+
+
 def _to_provider_messages(messages: list[CanonicalMessage]) -> list[dict[str, Any]]:
 
     system_parts: list[str] = []
@@ -69,6 +85,11 @@ def _to_provider_messages(messages: list[CanonicalMessage]) -> list[dict[str, An
                     for tc in m.tool_calls
                 ],
             }
+            # Hand back whatever this provider attached. Only ever present
+            # because the same provider produced it, so a provider that does
+            # not use these keys never sees them.
+            if m.provider_extras:
+                entry.update(m.provider_extras)
             out.append(entry)
             continue
         if m.role == "tool":
@@ -80,7 +101,10 @@ def _to_provider_messages(messages: list[CanonicalMessage]) -> list[dict[str, An
                 }
             )
             continue
-        out.append({"role": m.role, "content": _content_to_str(m.content)})
+        entry = {"role": m.role, "content": _content_to_str(m.content)}
+        if m.role == "assistant" and m.provider_extras:
+            entry.update(m.provider_extras)
+        out.append(entry)
     return out
 
 
@@ -181,6 +205,8 @@ class ChatCompletionsAdapter(LLMProvider):
         tool_ids: dict[int, str] = {}
         tool_args: dict[int, list[str]] = {}
         finish_reason: str | None = None
+        # Arrives in fragments like content does, so join rather than overwrite.
+        extras: dict[str, list[str]] = {}
 
         try:
             async with self._http.stream(
@@ -215,6 +241,8 @@ class ChatCompletionsAdapter(LLMProvider):
                     if provider_error is not None:
                         yield StreamEvent(kind="error", error=provider_error)
                         return
+
+                    _collect_passthrough(chunk, extras)
 
                     async for event in _translate_chunk(
                         chunk, tool_names, tool_ids, tool_args
@@ -257,7 +285,41 @@ class ChatCompletionsAdapter(LLMProvider):
                     tool_call_index=idx,
                 )
 
-        yield StreamEvent(kind="message_completed")
+        joined = {k: "".join(v) for k, v in extras.items() if "".join(v)}
+        yield StreamEvent(
+            kind="message_completed",
+            provider_extras=joined or None,
+        )
+
+
+def _collect_passthrough(chunk: dict[str, Any], into: dict[str, list[str]]) -> None:
+    """Accumulate the provider's own fields off one chunk.
+
+    The two frame shapes do not mean the same thing, and treating them alike
+    double-counts. A `delta` is an increment, so it appends. A `message` is the
+    finished value, so it replaces -- a provider that streams deltas and then
+    repeats the whole message in its final frame would otherwise report the
+    trace twice. A provider that does not stream sends only `message`, and
+    replacing an empty accumulator is the same as appending to it.
+    """
+    choices = chunk.get("choices") or []
+    if not choices:
+        return
+    choice = choices[0]
+
+    delta = choice.get("delta")
+    if isinstance(delta, dict):
+        for key in _PASSTHROUGH_KEYS:
+            value = delta.get(key)
+            if isinstance(value, str) and value:
+                into.setdefault(key, []).append(value)
+
+    message = choice.get("message")
+    if isinstance(message, dict):
+        for key in _PASSTHROUGH_KEYS:
+            value = message.get(key)
+            if isinstance(value, str) and value:
+                into[key] = [value]
 
 
 async def _translate_chunk(

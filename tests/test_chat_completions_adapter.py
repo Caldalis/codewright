@@ -240,3 +240,165 @@ async def test_sse_error_frame_yields_error_event():
     assert [ev.kind for ev in events] == ["error"]
     assert events[0].error is not None
     assert "10012" in events[0].error
+
+
+# ------------------------------------------------------- provider passthrough
+#
+# Thinking models return their trace on the assistant message under a key the
+# OpenAI schema does not define, and some refuse the next request if an
+# assistant message carrying tool_calls comes back without it. The spelling
+# varies by provider and only the issuing provider's spelling is accepted, so
+# the adapter carries the key verbatim rather than normalising it.
+
+
+@pytest.mark.asyncio
+async def test_reasoning_deltas_are_joined_and_reported_once():
+    chunks = [
+        _sse({"choices": [{"delta": {"reasoning_content": "I should "}}]}),
+        _sse({"choices": [{"delta": {"reasoning_content": "check the file."}}]}),
+        _sse({"choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}]}),
+    ]
+    transport = _make_transport(chunks)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = ChatCompletionsAdapter(api_key="t", model="m", http_client=client)
+        stream = await adapter.stream(
+            [CanonicalMessage(role="user", content="hi")], tools=[], turn_context=None
+        )
+        events = [ev async for ev in stream]
+
+    done = events[-1]
+    assert done.kind == "message_completed"
+    # Joined like content is, not last-write-wins.
+    assert done.provider_extras == {"reasoning_content": "I should check the file."}
+
+
+@pytest.mark.asyncio
+async def test_each_provider_keeps_its_own_spelling():
+    for key in ("reasoning", "thinking", "encrypted_content"):
+        chunks = [
+            _sse({"choices": [{"delta": {key: "trace"}}]}),
+            _sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}),
+        ]
+        transport = _make_transport(chunks)
+        async with httpx.AsyncClient(transport=transport) as client:
+            adapter = ChatCompletionsAdapter(api_key="t", model="m", http_client=client)
+            stream = await adapter.stream(
+                [CanonicalMessage(role="user", content="hi")],
+                tools=[],
+                turn_context=None,
+            )
+            events = [ev async for ev in stream]
+        assert events[-1].provider_extras == {key: "trace"}, key
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_shape_is_read_too():
+    """A provider may put the whole message in the final frame rather than
+    streaming it in deltas."""
+    chunks = [
+        _sse({"choices": [{"message": {"role": "assistant",
+                                       "reasoning_content": "thought",
+                                       "content": "ok"},
+                           "finish_reason": "stop"}]}),
+    ]
+    transport = _make_transport(chunks)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = ChatCompletionsAdapter(api_key="t", model="m", http_client=client)
+        stream = await adapter.stream(
+            [CanonicalMessage(role="user", content="hi")], tools=[], turn_context=None
+        )
+        events = [ev async for ev in stream]
+
+    assert events[-1].provider_extras == {"reasoning_content": "thought"}
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_invented_when_the_provider_sends_nothing():
+    """The field must stay absent for providers that never use it -- OpenAI
+    rejects unknown keys on a message outright."""
+    chunks = [
+        _sse({"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}),
+    ]
+    transport = _make_transport(chunks)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = ChatCompletionsAdapter(api_key="t", model="m", http_client=client)
+        stream = await adapter.stream(
+            [CanonicalMessage(role="user", content="hi")], tools=[], turn_context=None
+        )
+        events = [ev async for ev in stream]
+
+    assert events[-1].provider_extras is None
+
+
+def test_extras_are_echoed_on_a_tool_call_message():
+    """The shape that actually gets rejected: assistant + tool_calls."""
+    msgs = [
+        CanonicalMessage(
+            role="assistant",
+            content=(ContentBlock(text=None),),
+            tool_calls=(ToolCallBlock(call_id="c1", tool_name="shell",
+                                      arguments_json="{}"),),
+            provider_extras={"reasoning_content": "trace"},
+        ),
+    ]
+    out = _to_provider_messages(msgs)
+    assert out[0]["reasoning_content"] == "trace"
+    assert out[0]["tool_calls"][0]["id"] == "c1"
+
+
+def test_extras_are_echoed_on_a_plain_assistant_message():
+    out = _to_provider_messages([
+        CanonicalMessage(role="assistant", content="hi",
+                         provider_extras={"reasoning": "trace"}),
+    ])
+    assert out[0]["reasoning"] == "trace"
+
+
+def test_no_extras_means_no_extra_keys():
+    out = _to_provider_messages([
+        CanonicalMessage(role="assistant", content="hi"),
+        CanonicalMessage(role="user", content="hi"),
+    ])
+    for entry in out:
+        assert set(entry) <= {"role", "content"}, entry
+
+
+def test_extras_never_leak_onto_a_user_or_tool_message():
+    """Only the assistant turn carries them. A user message with the key set --
+    which should not happen -- must not put it on the wire."""
+    out = _to_provider_messages([
+        CanonicalMessage(role="user", content="hi",
+                         provider_extras={"reasoning_content": "x"}),
+        CanonicalMessage(role="tool", content="r", tool_call_id="c1",
+                         provider_extras={"reasoning_content": "x"}),
+    ])
+    assert "reasoning_content" not in out[0]
+    assert "reasoning_content" not in out[1]
+
+
+@pytest.mark.asyncio
+async def test_a_trailing_message_frame_replaces_the_deltas():
+    """A provider may stream the trace AND repeat the whole message at the end.
+
+    `delta` is an increment and `message` is the finished value, so reading both
+    as increments reports the trace twice.
+    """
+    chunks = [
+        _sse({"choices": [{"delta": {"reasoning_content": "I should "}}]}),
+        _sse({"choices": [{"delta": {"reasoning_content": "check it."}}]}),
+        _sse({"choices": [{"message": {"role": "assistant",
+                                       "reasoning_content": "I should check it.",
+                                       "content": "ok"},
+                           "finish_reason": "stop"}]}),
+    ]
+    transport = _make_transport(chunks)
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter = ChatCompletionsAdapter(api_key="t", model="m", http_client=client)
+        stream = await adapter.stream(
+            [CanonicalMessage(role="user", content="hi")], tools=[], turn_context=None
+        )
+        events = [ev async for ev in stream]
+
+    assert events[-1].provider_extras == {
+        "reasoning_content": "I should check it."
+    }
