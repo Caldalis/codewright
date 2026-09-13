@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codewright on SWE-bench Lite</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+<link rel="stylesheet" href="report.css">
+</head>
+<body>
+
+<nav class="langbar">
+  <span class="here">English</span>
+  <span class="sep">/</span>
+  <a href="lite50.zh.html">中文</a>
+  <span class="sep">·</span>
+  <a href="lite50.en.md">Markdown</a>
+</nav>
+
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Benchmark result · 13 Sep 2026</p>
+    <h1>Codewright on SWE-bench Lite</h1>
+    <p class="lede">
+      Fifty real GitHub issues, one agent turn each, graded by the official
+      SWE-bench harness. The agent saw the issue text and nothing else — no test
+      names, no reference diff.
+    </p>
+    <dl class="provenance">
+      <dt>dataset</dt><dd>SWE-bench/SWE-bench_Lite · test · n=50, random subset, seed 0</dd>
+      <dt>agent</dt><dd>codewright @ 9136b51</dd>
+      <dt>model</dt><dd>deepseek-v4.1-flash</dd>
+      <dt>settings</dt><dd>pass@1 · max_steps 60 · timeout 1800s · workers 3</dd>
+      <dt>graded by</dt><dd>swebench 5.0.2, official harness</dd>
+    </dl>
+  </header>
+
+  <div class="result">
+    <div class="figure-row">
+      <div class="figure">84.0%</div>
+      <div class="figure-note">42 of 50 resolved</div>
+    </div>
+
+    <div class="interval">
+      <div class="track" role="img" aria-label="84 percent resolved, with a 95% confidence interval from 71.5 to 91.7 percent, on a scale of 0 to 100 percent.">
+        <div class="band" style="left: 71.5%; right: 8.3%;"></div>
+        <div class="point" style="left: 84%;"></div>
+      </div>
+      <div class="ticks">
+        <span class="tick edge-l">0%</span>
+        <span class="tick" style="left: 71.5%;">71.5</span>
+        <span class="tick" style="left: 91.7%;">91.7</span>
+        <span class="tick edge-r">100%</span>
+      </div>
+      <p class="interval-caption">
+        The shaded band is the 95% Wilson interval. At n=50 it spans 20 points,
+        which is the honest precision of this measurement — 84% and 74% are not
+        distinguishable here.
+      </p>
+    </div>
+
+    <p class="claim">codewright + deepseek-v4.1-flash on SWE-bench/SWE-bench_Lite<br>(random subset, seed=0): 84.0% resolved (pass@1, n=50, 95% CI [71.5, 91.7])</p>
+  </div>
+
+  <section>
+    <h2>Where the eight failures went</h2>
+    <p>
+      This split matters more than the headline. One group is the model's record;
+      the other is the endpoint's. Seven of the eight non-resolved instances were
+      cut off by the gateway, not lost by the model.
+    </p>
+
+    <div class="buckets">
+      <div class="bucket">
+        <span class="bucket-name">resolved</span>
+        <span class="bucket-bar"><span class="bucket-fill fill-pass" style="width: 84%;"></span></span>
+        <span class="bucket-val">42</span>
+      </div>
+      <div class="bucket">
+        <span class="bucket-name">infra_error</span>
+        <span class="bucket-bar"><span class="bucket-fill fill-infra" style="width: 14%;"></span></span>
+        <span class="bucket-val">7</span>
+      </div>
+      <div class="bucket">
+        <span class="bucket-name">tests_failed</span>
+        <span class="bucket-bar"><span class="bucket-fill fill-miss" style="width: 2%;"></span></span>
+        <span class="bucket-val">1</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The failure ledger</h2>
+    <p>
+      Every instance that did not resolve, and the error that actually ended it.
+      The gateway produced four distinct symptoms — a stalled stream, a
+      malformed-request 500, a dropped connection, and two flavours of 429 — all
+      from the same instability.
+    </p>
+
+    <div class="ledger">
+      <div class="row">
+        <span class="row-id">django__django-13158</span>
+        <span class="tag tag-miss">model miss</span>
+        <p class="row-why">
+          Ran to completion over 34 model calls and 39 tool calls, produced a
+          13-line patch to <code>Query.set_empty()</code>, and signed off claiming
+          <code>QuerySet.none()</code> now recursed into <code>combined_queries</code>.
+          The tests stayed red. The only instance in the run where the agent
+          finished, was confident, and was wrong.
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">django__django-12284</span>
+        <span class="tag tag-infra">gateway</span>
+        <p class="row-why">
+          Four attempts. Three died on a bare <code>HTTP error</code> — the
+          connection dropped with no response body — and the fourth on
+          <code>upstream 500: invalid request error</code>. Nine calls in, no patch.
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">sympy__sympy-13915</span>
+        <span class="tag tag-infra">gateway</span>
+        <p class="row-why">
+          Four attempts, alternating between
+          <code>passthrough stream idle timeout after 120s waiting for next chunk</code>
+          and <code>upstream 500: invalid request error</code>. Fifteen calls in, no patch.
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">sympy__sympy-15346</span>
+        <span class="tag tag-infra">gateway</span>
+        <p class="row-why">
+          The same two errors alternating over four attempts. The last one got
+          two calls in before the stream stopped.
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">django__django-16408</span>
+        <span class="tag tag-infra">gateway</span>
+        <p class="row-why">
+          Had already written 51 lines over 17 calls when
+          <code>concurrent request limit exceeded: 100</code> ended the turn. The
+          truncated patch was submitted for grading anyway, and failed.
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">matplotlib__matplotlib-22835</span>
+        <span class="tag tag-infra">gateway</span>
+        <p class="row-why">
+          28 lines in at 19 calls, then <code>Rate limit exceeded</code>. The
+          truncated patch was graded and failed.
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">sympy__sympy-14308</span>
+        <span class="tag tag-infra">gateway</span>
+        <p class="row-why">
+          Three attempts — an upstream 500, then a dropped connection, then
+          <code>Rate limit exceeded</code> at 13 calls. Nothing written.
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">sphinx-doc__sphinx-8435</span>
+        <span class="tag tag-infra">gateway</span>
+        <p class="row-why">
+          <code>concurrent request limit exceeded: 100</code> after nine calls,
+          nothing written.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>By repository</h2>
+    <p>
+      No repository collapsed. The three largest carry the failures simply because
+      they carry the instances — Lite is 114 django and 77 sympy out of 300.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">repository</th><th scope="col" class="num">resolved</th><th scope="col" class="num">rate</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="repo">django/django</td><td class="num">13 / 16</td><td class="num">81%<span class="minibar"><span style="width:81%"></span></span></td></tr>
+          <tr><td class="repo">sympy/sympy</td><td class="num">11 / 14</td><td class="num">79%<span class="minibar"><span style="width:79%"></span></span></td></tr>
+          <tr><td class="repo">matplotlib/matplotlib</td><td class="num">4 / 5</td><td class="num">80%<span class="minibar"><span style="width:80%"></span></span></td></tr>
+          <tr><td class="repo">pytest-dev/pytest</td><td class="num">4 / 4</td><td class="num">100%<span class="minibar"><span style="width:100%"></span></span></td></tr>
+          <tr><td class="repo">sphinx-doc/sphinx</td><td class="num">2 / 3</td><td class="num">67%<span class="minibar"><span style="width:67%"></span></span></td></tr>
+          <tr><td class="repo">pylint-dev/pylint</td><td class="num">2 / 2</td><td class="num">100%<span class="minibar"><span style="width:100%"></span></span></td></tr>
+          <tr><td class="repo">scikit-learn</td><td class="num">2 / 2</td><td class="num">100%<span class="minibar"><span style="width:100%"></span></span></td></tr>
+          <tr><td class="repo">astropy · seaborn · requests · xarray</td><td class="num">4 / 4</td><td class="num">100%<span class="minibar"><span style="width:100%"></span></span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>What it cost</h2>
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-k">tokens in</span>
+        <span class="stat-v">18.8M</span>
+        <span class="stat-sub">median 282k / instance</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">tokens out</span>
+        <span class="stat-v">300k</span>
+        <span class="stat-sub">patches are small</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">container time</span>
+        <span class="stat-v">5.6 h</span>
+        <span class="stat-sub">median 5 min / instance</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">model calls</span>
+        <span class="stat-v">20</span>
+        <span class="stat-sub">median · 49 at most</span>
+      </div>
+    </div>
+    <p>
+      1,160 tool calls in total, 745 of them shell commands the agent ran under
+      full-auto approval. The spread is wide: the cheapest instance took 14k
+      tokens and 42 seconds, the most expensive 1.56M tokens and 22 minutes.
+      Budget from the tail, not the median.
+    </p>
+  </section>
+
+  <section>
+    <h2>Checked before believing it</h2>
+    <p>
+      84% sits above the range these agents usually post on Lite, so the number
+      was worth trying to disprove first.
+    </p>
+    <div class="checks">
+      <div class="check">
+        <span class="check-mark">PASS</span>
+        <p><strong>No patch touched a test file.</strong> Checked across all 50. The official harness restores test files before grading regardless, but a patch that tries would say something about the run.</p>
+      </div>
+      <div class="check">
+        <span class="check-mark">PASS</span>
+        <p><strong>The patches are real fixes.</strong> Three resolved instances were read against the reference diff. <code>astropy-12907</code>, <code>pylint-5859</code> and <code>sympy-24213</code> matched it character for character.</p>
+      </div>
+      <div class="check">
+        <span class="check-mark warn">FIXED</span>
+        <p><strong>The run metadata was wrong.</strong> A final single-instance pass had overwritten <code>config.json</code> with <code>n_instances: 1</code>, so the report was silently omitting the subset size and seed. Restored, with a note in the file.</p>
+      </div>
+      <div class="check">
+        <span class="check-mark warn">FIXED</span>
+        <p><strong>Four gateway failures were filed under the model.</strong> The report read <code>status</code> without consulting the recorded error, so throttling landed in <code>no_patch</code> and <code>agent_error</code> — the two buckets a reader scans for the model's mistakes. Corrected, the split went from five apparent model failures to one.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Caveats that travel with the number</h2>
+
+    <div class="caveat">
+      <h3>It was not one clean sweep</h3>
+      <p>
+        The first pass left nine instances on gateway failures. The five that had
+        produced no patch were re-run; the four that had produced a patch were
+        left alone, since re-rolling a real candidate is how a pass@1 number turns
+        into best-of-N. Re-running recovered four. Only infrastructure failures
+        were ever re-run — an unsolved instance never was, and the test suite
+        holds that line.
+      </p>
+    </div>
+
+    <div class="caveat">
+      <h3>The endpoint was unhealthy throughout</h3>
+      <p>
+        Half the instances hit at least one gateway failure; 48 retries across 25
+        instances in total. <code>infra_error</code> finished at 14%, where a
+        quotable run wants roughly zero. The true score is plausibly
+        <em>higher</em> than 84% — seven instances never got a fair attempt — but
+        the noise is real and belongs in any writeup. A later health check found
+        one in three trivial requests hanging outright.
+      </p>
+    </div>
+
+    <div class="caveat">
+      <h3>n=50 is a wide interval</h3>
+      <p>
+        Roughly ±10 points. Quoting 84% without the interval overstates what fifty
+        instances can tell you.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Reproducing it</h2>
+    <p>
+      <code>--seed 0</code> picks the same fifty instances on any machine: the
+      split is sorted by <code>instance_id</code> before sampling, so the subset
+      does not depend on dataset order.
+    </p>
+<pre><b>./evals/build_runtime.sh</b>
+
+<b>evals/.venv/bin/python -u evals/swebench/run_agent.py</b> \
+  --dataset SWE-bench/SWE-bench_Lite --subset 50 --seed 0 \
+  --runtime evals/_runtime/cw-runtime.tgz \
+  --model deepseek-v4.1-flash \
+  --max-steps 60 --timeout 1800 --workers 3 --retries 3 \
+  --out evals/runs/&lt;name&gt;
+
+<b>evals/.venv/bin/swebench eval</b> SWE-bench/SWE-bench_Lite \
+  -p evals/runs/&lt;name&gt;/preds.jsonl --run-id &lt;name&gt; \
+  --report-dir evals/runs/&lt;name&gt; -j 3
+
+<b>evals/.venv/bin/python evals/swebench/report.py</b> \
+  --run evals/runs/&lt;name&gt; \
+  --grading evals/runs/&lt;name&gt;/codewright+&lt;model&gt;.&lt;name&gt;.json</pre>
+    <p>
+      Pull the images before rolling out and let the pulls finish — a saturated
+      link makes the gateway's proxy time out mid-stream and manufactures failures
+      that look like the agent's. Budget about 94 GB of disk for fifty instances;
+      the 23 GB that crosses the wire is compressed.
+    </p>
+  </section>
+
+  <footer>
+    Rollout by evals/swebench/run_agent.py · grading by the official SWE-bench
+    harness, which is the only thing in this pipeline that decides pass or fail.
+    Per-instance records, patches and the grading report are in
+    evals/runs/lite50/, which is not tracked in git.
+  </footer>
+
+</div>
+</body>
+</html>

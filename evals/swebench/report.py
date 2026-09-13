@@ -29,6 +29,34 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (max(0.0, center - half), min(1.0, center + half))
 
 
+# The same set run_agent.py retries on, restated here because the report has to
+# read runs produced by older drivers too -- including ones whose markers did
+# not yet cover throttling.
+_GATEWAY_MARKERS = (
+    "provider error",
+    "http error:",
+    "stream idle timeout",
+    "rate limit",
+    "usage limit",
+    "concurrent request limit",
+    "http 429",
+    "429:",
+    "bad gateway",
+    "service unavailable",
+    "temporarily unavailable",
+)
+
+
+def _gateway_failure(agent: dict) -> bool:
+    """Did the gateway, rather than the model, end this run?"""
+    if agent.get("status") != "error":
+        return False
+    return any(
+        any(m in str(e).lower() for m in _GATEWAY_MARKERS)
+        for e in agent.get("errors") or []
+    )
+
+
 def bucket(rec: dict, resolved: set[str]) -> str:
     """One instance, one bucket -- checked most-specific first."""
     iid = rec["instance_id"]
@@ -45,6 +73,13 @@ def bucket(rec: dict, resolved: set[str]) -> str:
     # from "the model could not do it".
     if any("step budget exhausted" in e for e in agent.get("errors") or []):
         return "step_budget_exhausted"
+    # Before the model-blaming buckets, and asked of the recorded error rather
+    # than of the status: a run whose driver predates a marker, or that finished
+    # a patch and was then cut off by a 429, still carries the real cause in
+    # `errors`. Reading only `status` put five gateway failures under no_patch
+    # and agent_error, which is where a reader looks for the model's mistakes.
+    if _gateway_failure(agent):
+        return "infra_error"
     if status == "no_patch":
         return "no_patch"
     if agent.get("status") == "error":

@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codewright 的 SWE-bench Lite 成绩</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="report.css">
+<style>
+  /* 中文正文用无衬线：屏幕上宋体过重，且西文衬线数字混排在中文里会打架。
+     行高与字间距按中文阅读习惯调整，其余全部沿用共享 token。 */
+  body { font-family: var(--sans); line-height: 1.85; letter-spacing: .01em; }
+  .lede, .interval-caption, .row-why, .check p, .caveat p, section > p { max-width: 34em; }
+  h1 { line-height: 1.3; letter-spacing: 0; }
+  .bucket { grid-template-columns: 7rem 1fr 3.4rem; }
+  @media (max-width: 520px) { .bucket { grid-template-columns: 6rem 1fr 3rem; } }
+</style>
+</head>
+<body>
+
+<nav class="langbar">
+  <a href="lite50.en.html">English</a>
+  <span class="sep">/</span>
+  <span class="here">中文</span>
+  <span class="sep">·</span>
+  <a href="lite50.zh.md">Markdown</a>
+</nav>
+
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Benchmark result · 2026-09-13</p>
+    <h1>Codewright 的 SWE-bench Lite 成绩</h1>
+    <p class="lede">
+      50 个真实的 GitHub issue，每个只跑一遍，由官方 SWE-bench harness 判定。
+      Agent 只看得到 issue 正文，看不到测试名，也看不到参考补丁。
+    </p>
+    <dl class="provenance">
+      <dt>数据集</dt><dd>SWE-bench/SWE-bench_Lite · test · n=50，随机抽样，seed 0</dd>
+      <dt>Agent</dt><dd>codewright @ 9136b51</dd>
+      <dt>模型</dt><dd>deepseek-v4.1-flash</dd>
+      <dt>配置</dt><dd>pass@1 · max_steps 60 · timeout 1800s · workers 3</dd>
+      <dt>判定</dt><dd>swebench 5.0.2 官方 harness</dd>
+    </dl>
+  </header>
+
+  <div class="result">
+    <div class="figure-row">
+      <div class="figure">84.0%</div>
+      <div class="figure-note">50 个里解决了 42 个</div>
+    </div>
+
+    <div class="interval">
+      <div class="track" role="img" aria-label="解决率 84%，95% 置信区间为 71.5% 到 91.7%，标尺为 0 到 100%。">
+        <div class="band" style="left: 71.5%; right: 8.3%;"></div>
+        <div class="point" style="left: 84%;"></div>
+      </div>
+      <div class="ticks">
+        <span class="tick edge-l">0%</span>
+        <span class="tick" style="left: 71.5%;">71.5</span>
+        <span class="tick" style="left: 91.7%;">91.7</span>
+        <span class="tick edge-r">100%</span>
+      </div>
+      <p class="interval-caption">
+        阴影区间是 95% Wilson 置信区间。n=50 时它宽达 20 个百分点，这就是这次测量
+        真实的精度上限——在这个样本量下，84% 和 74% 是分不开的。
+      </p>
+    </div>
+
+    <p class="claim">codewright + deepseek-v4.1-flash on SWE-bench/SWE-bench_Lite<br>(random subset, seed=0): 84.0% resolved (pass@1, n=50, 95% CI [71.5, 91.7])</p>
+  </div>
+
+  <section>
+    <h2>没过的 8 个去哪了</h2>
+    <p>
+      这个拆分比总分更值得看。一边算在模型头上，另一边算在网关头上。
+      8 个未解决的实例里有 7 个是被网关掐断的，不是模型没做出来。
+    </p>
+
+    <div class="buckets">
+      <div class="bucket">
+        <span class="bucket-name">resolved</span>
+        <span class="bucket-bar"><span class="bucket-fill fill-pass" style="width: 84%;"></span></span>
+        <span class="bucket-val">42</span>
+      </div>
+      <div class="bucket">
+        <span class="bucket-name">infra_error</span>
+        <span class="bucket-bar"><span class="bucket-fill fill-infra" style="width: 14%;"></span></span>
+        <span class="bucket-val">7</span>
+      </div>
+      <div class="bucket">
+        <span class="bucket-name">tests_failed</span>
+        <span class="bucket-bar"><span class="bucket-fill fill-miss" style="width: 2%;"></span></span>
+        <span class="bucket-val">1</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>失败清单</h2>
+    <p>
+      每一个没过的实例，以及真正结束它的那条报错。网关一共表现出四种症状——流卡死、
+      500 报请求非法、连接直接断开、两种 429——但根子是同一个不稳定。
+    </p>
+
+    <div class="ledger">
+      <div class="row">
+        <span class="row-id">django__django-13158</span>
+        <span class="tag tag-miss">模型失手</span>
+        <p class="row-why">
+          完整跑完，34 次模型调用、39 次工具调用，给出 13 行改动，动的是
+          <code>Query.set_empty()</code>，收尾时声称 <code>QuerySet.none()</code>
+          已经能递归进 <code>combined_queries</code>。测试没过。
+          这是整轮唯一一个 agent 自认为做完了、而且做错了的实例。
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">django__django-12284</span>
+        <span class="tag tag-infra">网关</span>
+        <p class="row-why">
+          试了 4 次。前 3 次都是裸的 <code>HTTP error</code>——连接断开，没有响应体；
+          第 4 次是 <code>upstream 500: invalid request error</code>。跑到第 9 次调用，没有补丁。
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">sympy__sympy-13915</span>
+        <span class="tag tag-infra">网关</span>
+        <p class="row-why">
+          试了 4 次，在
+          <code>passthrough stream idle timeout after 120s waiting for next chunk</code>
+          和 <code>upstream 500: invalid request error</code> 之间交替。跑到第 15 次调用，没有补丁。
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">sympy__sympy-15346</span>
+        <span class="tag tag-infra">网关</span>
+        <p class="row-why">
+          同样两种报错交替出现，试了 4 次。最后一次只撑到第 2 次调用，流就停了。
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">django__django-16408</span>
+        <span class="tag tag-infra">网关</span>
+        <p class="row-why">
+          17 次调用已经写出 51 行，然后
+          <code>concurrent request limit exceeded: 100</code> 把这一轮打断了。
+          截断的补丁照样提交去判定，没过。
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">matplotlib__matplotlib-22835</span>
+        <span class="tag tag-infra">网关</span>
+        <p class="row-why">
+          19 次调用写到 28 行，然后 <code>Rate limit exceeded</code>。
+          截断的补丁参与判定，没过。
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">sympy__sympy-14308</span>
+        <span class="tag tag-infra">网关</span>
+        <p class="row-why">
+          试了 3 次——先是 upstream 500，再是连接断开，最后在第 13 次调用上撞到
+          <code>Rate limit exceeded</code>。什么都没写出来。
+        </p>
+      </div>
+      <div class="row">
+        <span class="row-id">sphinx-doc__sphinx-8435</span>
+        <span class="tag tag-infra">网关</span>
+        <p class="row-why">
+          第 9 次调用撞上 <code>concurrent request limit exceeded: 100</code>，什么都没写出来。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>按仓库拆</h2>
+    <p>
+      没有哪个仓库塌方。最大的三个之所以承担了全部失败，只是因为它们本来就占了大多数实例——
+      Lite 的 300 个里，django 有 114 个，sympy 有 77 个。
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th scope="col">仓库</th><th scope="col" class="num">解决</th><th scope="col" class="num">比例</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="repo">django/django</td><td class="num">13 / 16</td><td class="num">81%<span class="minibar"><span style="width:81%"></span></span></td></tr>
+          <tr><td class="repo">sympy/sympy</td><td class="num">11 / 14</td><td class="num">79%<span class="minibar"><span style="width:79%"></span></span></td></tr>
+          <tr><td class="repo">matplotlib/matplotlib</td><td class="num">4 / 5</td><td class="num">80%<span class="minibar"><span style="width:80%"></span></span></td></tr>
+          <tr><td class="repo">pytest-dev/pytest</td><td class="num">4 / 4</td><td class="num">100%<span class="minibar"><span style="width:100%"></span></span></td></tr>
+          <tr><td class="repo">sphinx-doc/sphinx</td><td class="num">2 / 3</td><td class="num">67%<span class="minibar"><span style="width:67%"></span></span></td></tr>
+          <tr><td class="repo">pylint-dev/pylint</td><td class="num">2 / 2</td><td class="num">100%<span class="minibar"><span style="width:100%"></span></span></td></tr>
+          <tr><td class="repo">scikit-learn</td><td class="num">2 / 2</td><td class="num">100%<span class="minibar"><span style="width:100%"></span></span></td></tr>
+          <tr><td class="repo">astropy · seaborn · requests · xarray</td><td class="num">4 / 4</td><td class="num">100%<span class="minibar"><span style="width:100%"></span></span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>成本</h2>
+    <div class="stats">
+      <div class="stat">
+        <span class="stat-k">输入 token</span>
+        <span class="stat-v">1880 万</span>
+        <span class="stat-sub">中位数 28.2 万 / 实例</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">输出 token</span>
+        <span class="stat-v">30 万</span>
+        <span class="stat-sub">补丁本身很小</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">容器时间</span>
+        <span class="stat-v">5.6 小时</span>
+        <span class="stat-sub">中位数 5 分钟 / 实例</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">模型调用</span>
+        <span class="stat-v">20</span>
+        <span class="stat-sub">中位数 · 最多 49</span>
+      </div>
+    </div>
+    <p>
+      工具调用共 1160 次，其中 745 次是在全自动放行下执行的 shell 命令。
+      尾部拉得很长：最便宜的实例 1.4 万 token、42 秒，最贵的 156 万 token、22 分钟。
+      做预算要按尾部算，不能按中位数算。
+    </p>
+  </section>
+
+  <section>
+    <h2>相信这个数之前先查过什么</h2>
+    <p>
+      84% 高于这类 agent 在 Lite 上的常见区间，所以先花力气去证伪它。
+    </p>
+    <div class="checks">
+      <div class="check">
+        <span class="check-mark">PASS</span>
+        <p><strong>没有任何补丁改过测试文件。</strong>50 个全查了。官方 harness 判定前本来就会还原测试文件，但补丁里如果有这种动作，本身就说明了这一轮的问题。</p>
+      </div>
+      <div class="check">
+        <span class="check-mark">PASS</span>
+        <p><strong>补丁是真修复。</strong>抽了 3 个已解决的实例跟参考补丁逐字对照，<code>astropy-12907</code>、<code>pylint-5859</code>、<code>sympy-24213</code> 完全一致。</p>
+      </div>
+      <div class="check">
+        <span class="check-mark warn">已修</span>
+        <p><strong>这一轮的元数据是错的。</strong>最后补跑单个实例时把 <code>config.json</code> 覆盖成了 <code>n_instances: 1</code>，报告因此悄悄漏掉了抽样规模和 seed。已还原，并在文件里留了说明。</p>
+      </div>
+      <div class="check">
+        <span class="check-mark warn">已修</span>
+        <p><strong>4 次网关故障被算到了模型头上。</strong>报告只读 <code>status</code>，没看记录下来的报错，于是限流落进了 <code>no_patch</code> 和 <code>agent_error</code>——恰好是读者用来找模型错误的两个桶。改正之后，看起来的 5 次模型失败变成了 1 次。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>必须跟着这个数一起引用的前提</h2>
+
+    <div class="caveat">
+      <h3>不是一遍干净跑完的</h3>
+      <p>
+        第一轮结束时有 9 个实例卡在网关故障上。其中没产出补丁的 5 个做了重跑；
+        已经产出补丁的 4 个没动——把一个真实候选重新摇一次，pass@1 就变成 best-of-N 了。
+        重跑救回来 4 个。只有基础设施故障被重跑过，没解决的实例从来没有，
+        测试用例守着这条线。
+      </p>
+    </div>
+
+    <div class="caveat">
+      <h3>整个过程里网关一直不健康</h3>
+      <p>
+        一半的实例至少撞上过一次网关故障，25 个实例上总共重试了 48 次。
+        <code>infra_error</code> 最终停在 14%，而一个能拿出去引用的跑批应该接近 0。
+        真实分数有理由<em>更高</em>——有 7 个实例根本没得到一次公平的尝试——
+        但这个噪声是真实存在的，写进任何结论里都得带上。事后做健康检查时，
+        三个最简单的请求里就有一个直接挂死。
+      </p>
+    </div>
+
+    <div class="caveat">
+      <h3>n=50 的区间很宽</h3>
+      <p>
+        大约 ±10 个百分点。只报 84% 而不报区间，等于夸大了 50 个实例能说明的东西。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>怎么复现</h2>
+    <p>
+      <code>--seed 0</code> 在任何机器上都会选中同样的 50 个实例：抽样前会先按
+      <code>instance_id</code> 排序，所以子集不依赖数据集本身的顺序。
+    </p>
+<pre><b>./evals/build_runtime.sh</b>
+
+<b>evals/.venv/bin/python -u evals/swebench/run_agent.py</b> \
+  --dataset SWE-bench/SWE-bench_Lite --subset 50 --seed 0 \
+  --runtime evals/_runtime/cw-runtime.tgz \
+  --model deepseek-v4.1-flash \
+  --max-steps 60 --timeout 1800 --workers 3 --retries 3 \
+  --out evals/runs/&lt;name&gt;
+
+<b>evals/.venv/bin/swebench eval</b> SWE-bench/SWE-bench_Lite \
+  -p evals/runs/&lt;name&gt;/preds.jsonl --run-id &lt;name&gt; \
+  --report-dir evals/runs/&lt;name&gt; -j 3
+
+<b>evals/.venv/bin/python evals/swebench/report.py</b> \
+  --run evals/runs/&lt;name&gt; \
+  --grading evals/runs/&lt;name&gt;/codewright+&lt;model&gt;.&lt;name&gt;.json</pre>
+    <p>
+      开跑之前先把镜像拉完，并且要等它真的拉完——链路一旦被占满，网关的代理就会在
+      流中途超时，制造出看起来像 agent 出错的故障。50 个实例要准备大约 94 GB 磁盘；
+      过网的那 23 GB 是压缩后的体积。
+    </p>
+  </section>
+
+  <footer>
+    Rollout 由 evals/swebench/run_agent.py 执行 · 判定由官方 SWE-bench harness 完成，
+    整条流水线里只有它决定过与不过。逐实例记录、补丁和判定报告在 evals/runs/lite50/，
+    该目录不纳入 git。
+  </footer>
+
+</div>
+</body>
+</html>
