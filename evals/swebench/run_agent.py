@@ -112,6 +112,15 @@ _INFRA_ERROR_MARKERS = (
     "temporarily unavailable",
     "bad gateway",
     "service unavailable",
+    # Being throttled is not a wrong answer. Two instances in the first 19 of a
+    # sweep ended on one of these, one of them with zero successful model calls
+    # and zero tokens -- the model never got to attempt the task, yet the
+    # instance recorded no_patch, which the report counts against the model.
+    # They are transient by definition, so they retry like any other.
+    "rate limit",
+    "usage limit",
+    "http 429",
+    "429:",
 )
 
 
@@ -147,6 +156,11 @@ def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -
         if infra is None:
             break
         seen.append(f"attempt {attempt}: {infra[:300]}")
+        if record.get("patch", "").strip():
+            # The agent did the work and the gateway fell over on the way out.
+            # Throwing that away to try again risks trading a real candidate for
+            # nothing, and judging it is the official harness's job, not ours.
+            break
         if attempt <= args.retries:
             # Each attempt gets a fresh container; this one may hold half-applied
             # edits, and diffing those would grade a state the agent abandoned.
@@ -158,9 +172,11 @@ def run_one(instance: dict[str, Any], args: argparse.Namespace, out_dir: Path) -
         # Kept even when a later attempt succeeded, so a run that fought the
         # gateway all night does not read afterwards as a clean one.
         record["infra_retries"] = seen
-    if _infra_failure(record) is not None:
-        # Out of retries. Name it infra_error rather than leaving it as
-        # agent_error, which the report counts against the model.
+    if _infra_failure(record) is not None and not record.get("patch", "").strip():
+        # Out of retries with nothing to show. Name it infra_error rather than
+        # no_patch or agent_error, both of which the report counts against the
+        # model -- and an instance where the gateway allowed zero model calls
+        # says nothing about the model at all.
         record["status"] = "infra_error"
 
     result_path.parent.mkdir(parents=True, exist_ok=True)
